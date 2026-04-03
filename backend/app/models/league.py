@@ -10,7 +10,7 @@ class League(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String, nullable=False)
     invite_code: Mapped[str] = mapped_column(String, unique=True, nullable=False)
-    commissioner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    commissioner_id: Mapped[str] = mapped_column(String, nullable=False)
     max_teams: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String, default="setup")
     draft_scheduled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
