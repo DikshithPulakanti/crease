@@ -36,7 +36,6 @@ async def create_league(body: CreateLeagueRequest, db: AsyncSession = Depends(ge
     if body.max_teams % 2 != 0:
         raise HTTPException(status_code=400, detail="max_teams must be even")
 
-    # Auto-create user if they don't exist yet
     result = await db.execute(
         select(User).where(User.id == body.commissioner_user_id)
     )
@@ -51,7 +50,6 @@ async def create_league(body: CreateLeagueRequest, db: AsyncSession = Depends(ge
         db.add(user)
         await db.flush()
 
-    # Create the league
     league = League(
         name=body.name,
         invite_code=generate_invite_code(),
@@ -62,7 +60,6 @@ async def create_league(body: CreateLeagueRequest, db: AsyncSession = Depends(ge
     db.add(league)
     await db.flush()
 
-    # Create the commissioner's team
     team = Team(
         league_id=league.id,
         user_id=body.commissioner_user_id,
@@ -98,6 +95,7 @@ async def join_league(
         select(Team).where(Team.league_id == league_id)
     )
     teams = teams_result.scalars().all()
+
     if len(teams) >= league.max_teams:
         raise HTTPException(status_code=400, detail="League is full")
 
@@ -108,7 +106,13 @@ async def join_league(
                 detail="Team name already taken in this league"
             )
 
-    # Auto-create user if they don't exist yet
+    for t in teams:
+        if t.user_id == body.user_id:
+            raise HTTPException(
+                status_code=400,
+                detail="You are already in this league"
+            )
+
     result2 = await db.execute(
         select(User).where(User.id == body.user_id)
     )
