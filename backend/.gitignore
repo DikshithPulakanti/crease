@@ -1,0 +1,24 @@
+# Virtual environment — never commit this
+venv/
+
+# Environment variables — never commit this (contains secrets)
+.env
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# pyenv
+.python-version
+
+# Alembic — don't commit auto-generated versions yet
+# (we'll remove this line once we start committing migrations)
+
+# VS Code
+.vscode/
+
+# Mac
+.DS_Store
