@@ -181,3 +181,34 @@ async def start_draft(league_id: str, db: AsyncSession = Depends(get_db)):
 async def get_draft(league_id: str):
     state = await get_draft_state(league_id)
     return state
+
+@router.get("/{league_id}/hub")
+async def get_league_hub(league_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(League).where(League.id == league_id)
+    )
+    league = result.scalar_one_or_none()
+    if not league:
+        raise HTTPException(status_code=404, detail="League not found")
+
+    teams_result = await db.execute(
+        select(Team).where(Team.league_id == league_id)
+    )
+    teams = teams_result.scalars().all()
+
+    return {
+        "league_id": str(league.id),
+        "name": league.name,
+        "status": league.status,
+        "invite_code": league.invite_code,
+        "max_teams": league.max_teams,
+        "teams": [
+            {
+                "id": str(t.id),
+                "name": t.name,
+                "user_id": t.user_id,
+                "draft_position": t.draft_position,
+            }
+            for t in teams
+        ]
+    }
