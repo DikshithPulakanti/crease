@@ -211,3 +211,50 @@ async def trade_action(
     await db.commit()
 
     return {"status": trade.status}
+
+
+class FreeAgentRequest(BaseModel):
+    league_id: str
+    player_in_id: str
+    player_out_id: str
+
+
+@router.post("/{team_id}/free-agent")
+async def claim_free_agent(
+    team_id: str,
+    body: FreeAgentRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(SquadPlayer).where(SquadPlayer.team_id == team_id)
+    )
+    squad = result.scalars().all()
+
+    if len(squad) >= 15:
+        if not body.player_out_id:
+            raise HTTPException(status_code=400, detail="Must drop a player when squad is full")
+        drop = next((s for s in squad if str(s.player_id) == body.player_out_id), None)
+        if not drop:
+            raise HTTPException(status_code=400, detail="Player to drop not found in squad")
+        await db.delete(drop)
+
+    new_player = SquadPlayer(
+        team_id=team_id,
+        player_id=body.player_in_id,
+        acquired_via="free_agent"
+    )
+    db.add(new_player)
+
+    activity = ActivityFeed(
+        league_id=body.league_id,
+        type="free_agent_claim",
+        actor_team_id=team_id,
+        payload={
+            "player_in_id": body.player_in_id,
+            "player_out_id": body.player_out_id,
+        }
+    )
+    db.add(activity)
+    await db.commit()
+
+    return {"message": "Free agent claimed successfully"}

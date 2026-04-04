@@ -70,7 +70,7 @@ export default function ActivityPage() {
       const activityData = await activityRes.json();
       const hubData = await hubRes.json();
 
-      setActivities(activityData);
+      setActivities(Array.isArray(activityData) ? activityData : []);
 
       const teamMap: Record<string, string> = {};
       hubData.teams?.forEach((t: Team) => {

@@ -216,8 +216,40 @@ async def get_league_hub(league_id: str, db: AsyncSession = Depends(get_db)):
     }
 
 
-@router.get("/{league_id}/activity")
-async def get_activity(league_id: str, db: AsyncSession = Depends(get_db)):
+@router.get("/{league_id}/free-agents")
+async def get_free_agents(league_id: str, db: AsyncSession = Depends(get_db)):
+    from app.models.squad import SquadPlayer
+
+    teams_result = await db.execute(
+        select(Team).where(Team.league_id == league_id)
+    )
+    teams = teams_result.scalars().all()
+    team_ids = [t.id for t in teams]
+
+    drafted_result = await db.execute(
+        select(SquadPlayer.player_id).where(
+            SquadPlayer.team_id.in_(team_ids)
+        )
+    )
+    drafted_ids = {row[0] for row in drafted_result.fetchall()}
+
+    from app.models.player import Player
+    all_players_result = await db.execute(select(Player))
+    free_agents = [
+        p for p in all_players_result.scalars().all()
+        if p.id not in drafted_ids
+    ]
+
+    return [
+        {
+            "id": str(p.id),
+            "name": p.name,
+            "position": p.position,
+            "club": p.club,
+            "photo_url": p.photo_url,
+        }
+        for p in free_agents
+    ]
     result = await db.execute(
         select(ActivityFeed)
         .where(ActivityFeed.league_id == league_id)
