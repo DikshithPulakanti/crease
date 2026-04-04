@@ -1,5 +1,6 @@
 import random
 import string
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -210,6 +211,7 @@ async def get_league_hub(league_id: str, db: AsyncSession = Depends(get_db)):
                 "name": t.name,
                 "user_id": t.user_id,
                 "draft_position": t.draft_position,
+                "standings_points": float(t.standings_points or 0),
             }
             for t in teams
         ]
@@ -219,6 +221,7 @@ async def get_league_hub(league_id: str, db: AsyncSession = Depends(get_db)):
 @router.get("/{league_id}/free-agents")
 async def get_free_agents(league_id: str, db: AsyncSession = Depends(get_db)):
     from app.models.squad import SquadPlayer
+    from app.models.player import Player
 
     teams_result = await db.execute(
         select(Team).where(Team.league_id == league_id)
@@ -233,7 +236,6 @@ async def get_free_agents(league_id: str, db: AsyncSession = Depends(get_db)):
     )
     drafted_ids = {row[0] for row in drafted_result.fetchall()}
 
-    from app.models.player import Player
     all_players_result = await db.execute(select(Player))
     free_agents = [
         p for p in all_players_result.scalars().all()
@@ -250,6 +252,10 @@ async def get_free_agents(league_id: str, db: AsyncSession = Depends(get_db)):
         }
         for p in free_agents
     ]
+
+
+@router.get("/{league_id}/activity")
+async def get_activity(league_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(ActivityFeed)
         .where(ActivityFeed.league_id == league_id)
@@ -268,3 +274,141 @@ async def get_free_agents(league_id: str, db: AsyncSession = Depends(get_db)):
         }
         for a in activities
     ]
+
+
+@router.post("/{league_id}/gameweeks")
+async def create_gameweek(
+    league_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    from app.models.gameweek import Gameweek
+    from app.models.matchup import Matchup
+
+    result = await db.execute(
+        select(Gameweek).where(Gameweek.league_id == league_id)
+    )
+    existing = result.scalars().all()
+    number = len(existing) + 1
+
+    labels = {
+        1: "QF Leg 1",
+        2: "QF Leg 2",
+        3: "SF Leg 1",
+        4: "SF Leg 2",
+        5: "Final"
+    }
+    label = labels.get(number, f"Gameweek {number}")
+
+    now = datetime.utcnow()
+    starts_at = now + timedelta(days=1)
+    locks_at = starts_at - timedelta(minutes=90)
+    ends_at = starts_at + timedelta(hours=3)
+
+    gw = Gameweek(
+        league_id=league_id,
+        number=number,
+        label=label,
+        status="upcoming",
+        starts_at=starts_at,
+        locks_at=locks_at,
+        ends_at=ends_at,
+    )
+    db.add(gw)
+    await db.flush()
+
+    teams_result = await db.execute(
+        select(Team).where(Team.league_id == league_id)
+    )
+    teams = teams_result.scalars().all()
+    team_ids = [t.id for t in teams]
+    n = len(team_ids)
+
+    round_idx = (number - 1) % (n - 1)
+    fixed = team_ids[0]
+    rotating = team_ids[1:]
+    rotated = rotating[round_idx:] + rotating[:round_idx]
+    pairs = [(fixed, rotated[0])] + [
+        (rotated[i], rotated[n - 2 - i])
+        for i in range(1, n // 2)
+    ]
+
+    for home_id, away_id in pairs:
+        matchup = Matchup(
+            league_id=league_id,
+            gameweek_id=gw.id,
+            home_team_id=home_id,
+            away_team_id=away_id,
+        )
+        db.add(matchup)
+
+    await db.commit()
+
+    return {
+        "gameweek_id": str(gw.id),
+        "number": number,
+        "label": label,
+        "starts_at": starts_at.isoformat(),
+        "locks_at": locks_at.isoformat(),
+    }
+
+
+@router.get("/{league_id}/gameweeks")
+async def get_gameweeks(league_id: str, db: AsyncSession = Depends(get_db)):
+    from app.models.gameweek import Gameweek
+    result = await db.execute(
+        select(Gameweek)
+        .where(Gameweek.league_id == league_id)
+        .order_by(Gameweek.number)
+    )
+    gameweeks = result.scalars().all()
+    return [
+        {
+            "id": str(g.id),
+            "number": g.number,
+            "label": g.label,
+            "status": g.status,
+            "starts_at": g.starts_at.isoformat() if g.starts_at else None,
+            "locks_at": g.locks_at.isoformat() if g.locks_at else None,
+        }
+        for g in gameweeks
+    ]
+
+
+@router.get("/{league_id}/matchup/{gameweek_id}/{team_id}")
+async def get_team_matchup(
+    league_id: str,
+    gameweek_id: str,
+    team_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    from app.models.matchup import Matchup
+    from app.routers.scoring import get_team_gameweek_breakdown
+
+    result = await db.execute(
+        select(Matchup).where(
+            Matchup.gameweek_id == gameweek_id,
+            (Matchup.home_team_id == team_id) |
+            (Matchup.away_team_id == team_id)
+        )
+    )
+    matchup = result.scalar_one_or_none()
+    if not matchup:
+        raise HTTPException(status_code=404, detail="Matchup not found")
+
+    home_players = await get_team_gameweek_breakdown(
+        str(matchup.home_team_id), gameweek_id, db
+    )
+    away_players = await get_team_gameweek_breakdown(
+        str(matchup.away_team_id), gameweek_id, db
+    )
+
+    return {
+        "id": str(matchup.id),
+        "home_team_id": str(matchup.home_team_id),
+        "away_team_id": str(matchup.away_team_id),
+        "home_score": float(matchup.home_score),
+        "away_score": float(matchup.away_score),
+        "result": matchup.result,
+        "home_players": home_players,
+        "away_players": away_players,
+    }

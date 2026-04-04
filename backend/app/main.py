@@ -6,6 +6,7 @@ from app.routers import draft, leagues
 from app.routers import draft, leagues, players
 from app.routers import draft, leagues, players, teams
 from app.routers import draft, leagues, players, teams, scoring
+from app.workers import start_workers
 
 app = FastAPI(
     title="Crease API",
@@ -39,6 +40,7 @@ app.include_router(scoring.router)
 async def startup():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await start_workers()
 
 # Simple endpoint to confirm the server is running.
 @app.get("/healthz")
