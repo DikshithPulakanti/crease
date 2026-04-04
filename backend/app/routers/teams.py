@@ -66,7 +66,33 @@ async def save_selection(
     if body.captain_id == body.vice_captain_id:
         raise HTTPException(status_code=400, detail="Captain and vice captain must be different")
 
-    return {"message": "Selection saved successfully"}
+    # Validate positions in starting 11
+    players_result = await db.execute(
+        select(Player).where(Player.id.in_(body.starting_11))
+    )
+    starting_players = players_result.scalars().all()
+
+    position_counts = {"GK": 0, "DEF": 0, "MID": 0, "ATT": 0}
+    for p in starting_players:
+        position_counts[p.position] = position_counts.get(p.position, 0) + 1
+
+    # Must have exactly 1 GK
+    if position_counts.get("GK", 0) != 1:
+        raise HTTPException(status_code=400, detail="Starting 11 must have exactly 1 goalkeeper")
+
+    # Must have at least 3 DEF
+    if position_counts.get("DEF", 0) < 3:
+        raise HTTPException(status_code=400, detail="Starting 11 must have at least 3 defenders")
+
+    # Must have at least 2 MID
+    if position_counts.get("MID", 0) < 2:
+        raise HTTPException(status_code=400, detail="Starting 11 must have at least 2 midfielders")
+
+    # Must have at least 1 ATT
+    if position_counts.get("ATT", 0) < 1:
+        raise HTTPException(status_code=400, detail="Starting 11 must have at least 1 attacker")
+
+    return {"message": "Selection saved successfully", "position_counts": position_counts}
 
 
 class TradeRequest(BaseModel):
@@ -231,8 +257,6 @@ async def claim_free_agent(
     squad = result.scalars().all()
 
     if len(squad) >= 15:
-        if not body.player_out_id:
-            raise HTTPException(status_code=400, detail="Must drop a player when squad is full")
         drop = next((s for s in squad if str(s.player_id) == body.player_out_id), None)
         if not drop:
             raise HTTPException(status_code=400, detail="Player to drop not found in squad")

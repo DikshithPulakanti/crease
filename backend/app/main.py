@@ -5,6 +5,7 @@ from app.database import engine, Base
 from app.routers import draft, leagues
 from app.routers import draft, leagues, players
 from app.routers import draft, leagues, players, teams
+from app.routers import draft, leagues, players, teams, scoring
 
 app = FastAPI(
     title="Crease API",
@@ -30,6 +31,7 @@ app.include_router(leagues.router)
 app.include_router(draft.router)
 app.include_router(players.router)
 app.include_router(teams.router)
+app.include_router(scoring.router)
 
 # Runs once when the server starts.
 # Creates any tables that don't exist yet.
