@@ -8,6 +8,7 @@ from app.database import get_db
 from app.models.league import League
 from app.models.team import Team
 from app.models.user import User
+from app.models.activity import ActivityFeed
 from app.draft import initialize_draft, get_draft_state
 
 router = APIRouter(prefix="/leagues", tags=["leagues"])
@@ -182,6 +183,7 @@ async def get_draft(league_id: str):
     state = await get_draft_state(league_id)
     return state
 
+
 @router.get("/{league_id}/hub")
 async def get_league_hub(league_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
@@ -212,3 +214,25 @@ async def get_league_hub(league_id: str, db: AsyncSession = Depends(get_db)):
             for t in teams
         ]
     }
+
+
+@router.get("/{league_id}/activity")
+async def get_activity(league_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(ActivityFeed)
+        .where(ActivityFeed.league_id == league_id)
+        .order_by(ActivityFeed.created_at.desc())
+        .limit(50)
+    )
+    activities = result.scalars().all()
+
+    return [
+        {
+            "id": str(a.id),
+            "type": a.type,
+            "actor_team_id": str(a.actor_team_id) if a.actor_team_id else None,
+            "payload": a.payload,
+            "created_at": a.created_at.isoformat(),
+        }
+        for a in activities
+    ]
