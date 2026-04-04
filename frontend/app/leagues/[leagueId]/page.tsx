@@ -92,6 +92,9 @@ export default function LeagueHubPage() {
             <a href={"/leagues/" + leagueId + "/team"} className="text-sm text-gray-400 hover:text-white transition">
               My Team
             </a>
+            <a href={"/leagues/" + leagueId + "/matchup"} className="text-sm text-gray-400 hover:text-white transition">
+              Matchup
+            </a>
             <a href={"/leagues/" + leagueId + "/trades"} className="text-sm text-gray-400 hover:text-white transition">
               Trades
             </a>
