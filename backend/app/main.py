@@ -4,6 +4,7 @@ from app.config import settings
 from app.database import engine, Base
 from app.routers import draft, leagues
 from app.routers import draft, leagues, players
+from app.routers import draft, leagues, players, teams
 
 app = FastAPI(
     title="Crease API",
@@ -28,6 +29,7 @@ app.add_middleware(
 app.include_router(leagues.router)
 app.include_router(draft.router)
 app.include_router(players.router)
+app.include_router(teams.router)
 
 # Runs once when the server starts.
 # Creates any tables that don't exist yet.
