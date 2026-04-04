@@ -88,6 +88,17 @@ export default function LeagueHubPage() {
             Back
           </a>
           <h1 className="text-xl font-bold">Crease</h1>
+          <nav className="flex gap-4 ml-6">
+            <a href={"/leagues/" + leagueId + "/team"} className="text-sm text-gray-400 hover:text-white transition">
+              My Team
+            </a>
+            <a href={"/leagues/" + leagueId + "/trades"} className="text-sm text-gray-400 hover:text-white transition">
+              Trades
+            </a>
+            <a href={"/leagues/" + leagueId + "/draft"} className="text-sm text-gray-400 hover:text-white transition">
+              Draft Room
+            </a>
+          </nav>
         </div>
       </header>
 
