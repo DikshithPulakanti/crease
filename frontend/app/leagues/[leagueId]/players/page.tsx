@@ -53,7 +53,6 @@ export default function PlayerPoolPage() {
   const [pos, setPos] = useState<string>("ALL");
   const [q, setQ] = useState("");
   const [freeOnly, setFreeOnly] = useState(false);
-  const [domIntl, setDomIntl] = useState<"ALL" | "DOM" | "INTL">("ALL");
   const [advOpen, setAdvOpen] = useState(false);
   const [mateFilter, setMateFilter] = useState<Record<string, boolean>>({});
   const [clubFilter, setClubFilter] = useState<Record<string, boolean>>({});
@@ -145,8 +144,6 @@ export default function PlayerPoolPage() {
       if (qq && !r.name.toLowerCase().includes(qq) && !r.club.toLowerCase().includes(qq))
         return false;
       if (freeOnly && r.owner_team_id) return false;
-      if (domIntl === "DOM" && r.club && !isDomestic(r.club)) return false;
-      if (domIntl === "INTL" && r.club && isDomestic(r.club)) return false;
       const activeMates = Object.entries(mateFilter).filter(([, v]) => v).map(([k]) => k);
       if (activeMates.length && r.owner_team_id && !activeMates.includes(r.owner_team_id))
         return false;
@@ -154,7 +151,7 @@ export default function PlayerPoolPage() {
       if (activeClubs.length && !activeClubs.includes(r.club)) return false;
       return true;
     });
-  }, [rows, pos, q, freeOnly, domIntl, mateFilter, clubFilter]);
+  }, [rows, pos, q, freeOnly, mateFilter, clubFilter]);
 
   if (loading) {
     return (
@@ -241,20 +238,6 @@ export default function PlayerPoolPage() {
             />
             Free agents only
           </label>
-          <div className="flex rounded-xl border border-white/8 p-0.5">
-            {(["ALL", "DOM", "INTL"] as const).map((x) => (
-              <button
-                key={x}
-                type="button"
-                onClick={() => setDomIntl(x)}
-                className={`rounded-lg px-3 py-1 text-xs font-bold ${
-                  domIntl === x ? "bg-emerald-500/20 text-emerald-300" : "text-zinc-500"
-                }`}
-              >
-                {x}
-              </button>
-            ))}
-          </div>
         </div>
       </header>
 
@@ -428,9 +411,4 @@ export default function PlayerPoolPage() {
       />
     </div>
   );
-}
-
-function isDomestic(club: string): boolean {
-  const english = ["Arsenal", "Liverpool", "Chelsea", "City", "United", "Tottenham"];
-  return english.some((e) => club.includes(e));
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
 import { LeagueSidebar } from "./LeagueSidebar";
 import { ActivityLogPanel } from "./ActivityLogPanel";
 import { DraftBoardFab } from "./DraftBoardFab";
@@ -15,6 +16,8 @@ export function LeagueShell({
   teamNameById?: Record<string, string>;
   children: React.ReactNode;
 }) {
+  const pathname = usePathname();
+  const isHomePage = pathname === `/leagues/${leagueId}`;
   const [picked, setPicked] = useState(0);
   useEffect(() => {
     let c = false;
@@ -34,7 +37,7 @@ export function LeagueShell({
       <LeagueSidebar leagueId={leagueId} />
       <div className="flex min-w-0 flex-1 flex-col md:flex-row">
         <div className="min-w-0 flex-1">{children}</div>
-        <ActivityLogPanel leagueId={leagueId} teamNameById={teamNameById} />
+        {isHomePage && <ActivityLogPanel leagueId={leagueId} teamNameById={teamNameById} />}
       </div>
       <DraftBoardFab leagueId={leagueId} pickedCount={picked} />
     </div>
