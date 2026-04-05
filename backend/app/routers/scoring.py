@@ -206,6 +206,9 @@ async def calculate_gameweek(
         # Get fixture result (who won)
         fixture_result = await fetch_fixture_result(fixture_id)
         winner_team_id = fixture_result.get("winner_team_id")
+        home_goals = fixture_result.get("home_goals", 0) or 0
+        away_goals = fixture_result.get("away_goals", 0) or 0
+        match_draw = home_goals == away_goals
 
         # Get player stats
         match_players = await fetch_match_player_stats(fixture_id)
@@ -220,13 +223,14 @@ async def calculate_gameweek(
             stats = map_api_stats(mp["stats"], player.position)
 
             # Check if player's team won
-            team_won = (mp["team_id"] == winner_team_id)
+            team_won = winner_team_id is not None and (mp["team_id"] == winner_team_id)
 
             # Calculate points
             result = calculate_player_points(
                 position=player.position,
                 stats=stats,
                 team_won=team_won,
+                match_draw=match_draw,
             )
 
             # Check if score already exists

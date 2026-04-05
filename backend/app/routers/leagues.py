@@ -461,13 +461,22 @@ async def get_standings(league_id: str, db: AsyncSession = Depends(get_db)):
             wins[aid] += 1
             losses[hid] += 1
 
+    user_ids = list({t.user_id for t in teams.values()})
+    username_by_id: dict[str, str] = {}
+    if user_ids:
+        u_result = await db.execute(select(User).where(User.id.in_(user_ids)))
+        for u in u_result.scalars().all():
+            username_by_id[u.id] = u.username
+
     rows = []
     for tid, team in teams.items():
+        owner_username = username_by_id.get(team.user_id) or team.user_id
         rows.append(
             {
                 "team_id": tid,
                 "name": team.name,
                 "user_id": team.user_id,
+                "owner_username": owner_username,
                 "wins": wins.get(tid, 0),
                 "losses": losses.get(tid, 0),
                 "fantasy_points_season": round(fantasy_points.get(tid, 0.0), 1),

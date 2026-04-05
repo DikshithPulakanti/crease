@@ -1,607 +1,543 @@
 """
-Scoring Engine — Approach 3: Position DNA + Out-of-Position Rarity Multiplier
-------------------------------------------------------------------------------
-Each position is judged on its own parameters.
-Out-of-position actions get a rarity bonus.
-Clean sheet uses Option B — snapshot at substitution minute.
-Captain = 2x, Vice Captain = 1.5x applied to final points.
-Win bonus = +1 for players whose real CL team won the match.
+Crease fantasy scoring — position-specific standards, universal match points,
+out-of-position rarity bonuses, then win/draw, then captain multipliers on final total.
 """
 
-from typing import Optional
+from __future__ import annotations
+
+from typing import Any, Optional
 
 
-def calculate_gk_points(stats: dict, sub_snapshot: Optional[dict] = None) -> dict:
-    """
-    GK scoring — Primary: Shot Stopping & Distribution
-    """
-    points = 0.0
-    breakdown = {}
+def _r(x: Any, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return default
 
-    # Minutes played
-    minutes = stats.get("minutes", 0)
+
+def _i(x: Any, default: int = 0) -> int:
+    try:
+        return int(x)
+    except (TypeError, ValueError):
+        return default
+
+
+def score_minutes_universal(stats: dict) -> tuple[float, dict]:
+    """90+ min: +2 | 60–89 min: +1 (General — all positions)."""
+    minutes = _i(stats.get("minutes", 0))
+    bd: dict = {}
+    if minutes >= 90:
+        return 2.0, {"minutes_90_plus": 2}
     if minutes >= 60:
-        points += 2
-        breakdown["minutes_60+"] = 2
-    elif minutes >= 1:
-        points += 1
-        breakdown["minutes_1_59"] = 1
+        return 1.0, {"minutes_60_89": 1}
+    return 0.0, bd
 
-    # Saves
-    saves = stats.get("saves", 0)
-    if saves > 0:
-        pts = saves * 2
-        points += pts
-        breakdown["saves"] = pts
 
-    # Penalty save
-    penalty_saves = stats.get("penalty_saves", 0)
-    if penalty_saves > 0:
-        pts = penalty_saves * 8
-        points += pts
-        breakdown["penalty_saves"] = pts
+def _goals_conceded_at_time(stats: dict, sub_snapshot: Optional[dict]) -> int:
+    if sub_snapshot and sub_snapshot.get("minute"):
+        return _i(sub_snapshot.get("goals_conceded_at_sub", stats.get("goals_conceded", 0)))
+    return _i(stats.get("goals_conceded", 0))
 
-    # Clean sheet (Option B — uses sub_snapshot if subbed off)
-    goals_conceded = _goals_conceded_at_time(stats, sub_snapshot)
-    if goals_conceded == 0 and minutes >= 60:
+
+def calculate_gk_standard(stats: dict, sub_snapshot: Optional[dict] = None) -> tuple[float, dict]:
+    """Goalkeeping — standard events only."""
+    points = 0.0
+    bd: dict = {}
+    minutes = _i(stats.get("minutes", 0))
+
+    saves = _i(stats.get("saves", 0))
+    saves_inside = _i(stats.get("saves_inside_box", 0))
+    saves_out = max(0, saves - saves_inside)
+    if saves_out:
+        p = saves_out * 2
+        points += p
+        bd["saves"] = p
+    if saves_inside:
+        p = saves_inside * 3
+        points += p
+        bd["saves_inside_box"] = p
+
+    ps = _i(stats.get("penalty_saves", 0))
+    if ps:
+        p = ps * 8
+        points += p
+        bd["penalty_saves"] = p
+
+    gc = _goals_conceded_at_time(stats, sub_snapshot)
+    if gc == 0 and minutes >= 60:
         points += 6
-        breakdown["clean_sheet"] = 6
+        bd["clean_sheet_60"] = 6
 
-    # High claim
-    high_claims = stats.get("high_claims", 0)
-    if high_claims > 0:
-        pts = high_claims * 2
-        points += pts
-        breakdown["high_claims"] = pts
+    xg_faced = _r(stats.get("xg_faced", stats.get("expected_goals_against", 0)))
+    prevention = max(0.0, xg_faced - float(gc))
+    if prevention > 0:
+        units = prevention / 0.5
+        p = round(units * 2.0, 1)
+        points += p
+        bd["goals_prevented_xg"] = p
 
-    # Sweeper keeper actions
-    sweeper_actions = stats.get("sweeper_actions", 0)
-    if sweeper_actions > 0:
-        pts = sweeper_actions * 2
-        points += pts
-        breakdown["sweeper_actions"] = pts
+    hc = _i(stats.get("high_claims", 0))
+    if hc:
+        p = hc * 2
+        points += p
+        bd["high_claims"] = p
 
-    # Distribution accuracy 60%+
-    if stats.get("pass_accuracy", 0) >= 60:
+    sw = _i(stats.get("sweeper_actions", 0))
+    if sw:
+        p = sw * 2
+        points += p
+        bd["sweeper_keeper"] = p
+
+    if _r(stats.get("pass_accuracy", stats.get("passes_accuracy", 0))) >= 60.0:
         points += 2
-        breakdown["distribution"] = 2
+        bd["long_distribution_60pct"] = 2
 
-    # Goals conceded penalty (per goal)
-    if goals_conceded > 0:
-        pts = goals_conceded * -2
-        points += pts
-        breakdown["goals_conceded"] = pts
+    if gc > 0:
+        p = gc * -2
+        points += p
+        bd["goals_conceded"] = p
 
-    # Error leading to goal
-    errors = stats.get("errors_leading_to_goal", 0)
-    if errors > 0:
-        pts = errors * -5
-        points += pts
-        breakdown["errors_leading_to_goal"] = pts
+    err = _i(stats.get("errors_leading_to_goal", 0))
+    if err:
+        p = err * -5
+        points += p
+        bd["errors_leading_to_goal"] = p
 
-    # Cards
-    if stats.get("yellow_card", False):
-        points += -2
-        breakdown["yellow_card"] = -2
-    if stats.get("red_card", False):
-        points += -6
-        breakdown["red_card"] = -6
-
-    # --- Out-of-Position Rarity Bonuses ---
-    goals = stats.get("goals", 0)
-    if goals > 0:
-        pts = goals * 20  # GK scoring is extraordinarily rare
-        points += pts
-        breakdown["goals_rarity"] = pts
-
-    assists = stats.get("assists", 0)
-    if assists > 0:
-        pts = assists * 12
-        points += pts
-        breakdown["assists_rarity"] = pts
-
-    aerial_duels_won = stats.get("aerial_duels_won", 0)
-    if aerial_duels_won > 0:
-        pts = aerial_duels_won * 3
-        points += pts
-        breakdown["aerial_duels_rarity"] = pts
-
-    return {"total": round(points, 1), "breakdown": breakdown}
+    return round(points, 1), bd
 
 
-def calculate_def_points(stats: dict, sub_snapshot: Optional[dict] = None) -> dict:
-    """
-    DEF scoring — Primary: Defending. Secondary: Build-up
-    """
+def calculate_gk_rarity(stats: dict) -> tuple[float, dict]:
+    """GK out-of-position rarity bonuses."""
     points = 0.0
-    breakdown = {}
+    bd: dict = {}
+    g = _i(stats.get("goals", 0))
+    if g:
+        p = g * 20
+        points += p
+        bd["rarity_goal"] = p
+    a = _i(stats.get("assists", 0))
+    if a:
+        p = a * 12
+        points += p
+        bd["rarity_assist"] = p
+    aerial = _i(stats.get("aerial_open_play_duels_won", stats.get("aerial_duels_won_open_play", 0)))
+    if aerial:
+        p = aerial * 3
+        points += p
+        bd["rarity_aerial_open_play"] = p
+    return round(points, 1), bd
 
-    minutes = stats.get("minutes", 0)
-    if minutes >= 60:
-        points += 2
-        breakdown["minutes_60+"] = 2
-    elif minutes >= 1:
-        points += 1
-        breakdown["minutes_1_59"] = 1
 
-    # Tackles won
-    tackles = stats.get("tackles_won", 0)
-    if tackles > 0:
-        pts = tackles * 1.5
-        points += pts
-        breakdown["tackles_won"] = pts
+def calculate_def_standard(stats: dict, sub_snapshot: Optional[dict] = None) -> tuple[float, dict]:
+    points = 0.0
+    bd: dict = {}
+    minutes = _i(stats.get("minutes", 0))
 
-    # Interceptions
-    interceptions = stats.get("interceptions", 0)
-    if interceptions > 0:
-        pts = interceptions * 1.5
-        points += pts
-        breakdown["interceptions"] = pts
+    tw = _i(stats.get("tackles_won", 0))
+    if tw:
+        p = tw * 2
+        points += p
+        bd["tackles_won"] = p
 
-    # Clearances
-    clearances = stats.get("clearances", 0)
-    if clearances > 0:
-        pts = clearances * 1.0
-        points += pts
-        breakdown["clearances"] = pts
+    inter = _i(stats.get("interceptions", 0))
+    if inter:
+        p = inter * 2
+        points += p
+        bd["interceptions"] = p
 
-    # Blocked shots
-    blocked_shots = stats.get("blocked_shots", 0)
-    if blocked_shots > 0:
-        pts = blocked_shots * 2.0
-        points += pts
-        breakdown["blocked_shots"] = pts
+    clr = _i(stats.get("clearances", 0))
+    if clr:
+        p = clr * 1
+        points += p
+        bd["clearances"] = p
 
-    # Aerial duels won
-    aerial_duels = stats.get("aerial_duels_won", 0)
-    if aerial_duels > 0:
-        pts = aerial_duels * 1.0
-        points += pts
-        breakdown["aerial_duels_won"] = pts
+    blk = _i(stats.get("blocked_shots", 0))
+    if blk:
+        p = blk * 3
+        points += p
+        bd["blocked_shots"] = p
 
-    # Clean sheet
-    goals_conceded = _goals_conceded_at_time(stats, sub_snapshot)
-    if goals_conceded == 0 and minutes >= 60:
+    ad = _i(stats.get("aerial_duels_won", 0))
+    if ad:
+        p = ad * 1.5
+        points += p
+        bd["aerial_duels_won"] = p
+
+    gd = _i(stats.get("ground_duels_won", 0))
+    if gd:
+        p = gd * 1
+        points += p
+        bd["ground_duels_won"] = p
+
+    gc = _goals_conceded_at_time(stats, sub_snapshot)
+    if gc == 0 and minutes >= 60:
         points += 5
-        breakdown["clean_sheet"] = 5
+        bd["clean_sheet_60"] = 5
 
-    # Progressive carries
-    prog_carries = stats.get("progressive_carries", 0)
-    if prog_carries > 0:
-        pts = prog_carries * 1.0
-        points += pts
-        breakdown["progressive_carries"] = pts
+    pc = _i(stats.get("progressive_carries", 0))
+    if pc:
+        p = pc * 1
+        points += p
+        bd["progressive_carry"] = p
 
-    # Accurate long balls
-    long_balls = stats.get("accurate_long_balls", 0)
-    if long_balls > 0:
-        pts = long_balls * 0.5
-        points += pts
-        breakdown["accurate_long_balls"] = pts
+    lb = _i(stats.get("accurate_long_balls", 0))
+    if lb:
+        p = lb * 0.5
+        points += p
+        bd["accurate_long_ball"] = p
 
-    # Goals conceded penalty
-    if goals_conceded > 0:
-        pts = goals_conceded * -1.5
-        points += pts
-        breakdown["goals_conceded"] = pts
+    if gc > 0:
+        p = gc * -1.5
+        points += p
+        bd["goals_conceded"] = p
 
-    # Dribbled past
-    dribbled_past = stats.get("dribbled_past", 0)
-    if dribbled_past > 0:
-        pts = dribbled_past * -1.5
-        points += pts
-        breakdown["dribbled_past"] = pts
+    dp = _i(stats.get("dribbled_past", 0))
+    if dp:
+        p = dp * -1.5
+        points += p
+        bd["dribbled_past"] = p
 
-    # Error leading to goal
-    errors = stats.get("errors_leading_to_goal", 0)
-    if errors > 0:
-        pts = errors * -5
-        points += pts
-        breakdown["errors_leading_to_goal"] = pts
+    err = _i(stats.get("errors_leading_to_goal", 0))
+    if err:
+        p = err * -5
+        points += p
+        bd["errors_leading_to_goal"] = p
 
-    # Cards
-    if stats.get("yellow_card", False):
-        points += -2
-        breakdown["yellow_card"] = -2
-    if stats.get("red_card", False):
-        points += -6
-        breakdown["red_card"] = -6
-
-    # --- Out-of-Position Rarity Bonuses ---
-    goals = stats.get("goals", 0)
-    if goals > 0:
-        pts = goals * 7
-        points += pts
-        breakdown["goals"] = pts
-
-    assists = stats.get("assists", 0)
-    if assists > 0:
-        pts = assists * 5
-        points += pts
-        breakdown["assists"] = pts
-
-    # Dribble in final third
-    final_third_dribbles = stats.get("final_third_dribbles", 0)
-    if final_third_dribbles > 0:
-        pts = final_third_dribbles * 3
-        points += pts
-        breakdown["final_third_dribbles_rarity"] = pts
-
-    # Shot on target (rare for DEF)
-    shots_on_target = stats.get("shots_on_target", 0)
-    if shots_on_target > 0:
-        pts = shots_on_target * 2
-        points += pts
-        breakdown["shots_on_target_rarity"] = pts
-
-    return {"total": round(points, 1), "breakdown": breakdown}
+    return round(points, 1), bd
 
 
-def calculate_mid_points(stats: dict, sub_snapshot: Optional[dict] = None) -> dict:
+def calculate_def_rarity(stats: dict) -> tuple[float, dict]:
+    points = 0.0
+    bd: dict = {}
+    g = _i(stats.get("goals", 0))
+    if g:
+        p = g * 10
+        points += p
+        bd["rarity_goal"] = p
+    a = _i(stats.get("assists", 0))
+    if a:
+        p = a * 8
+        points += p
+        bd["rarity_assist"] = p
+    ftd = _i(stats.get("final_third_dribbles", 0))
+    if ftd:
+        p = ftd * 3
+        points += p
+        bd["rarity_dribble_final_third"] = p
+    sot = _i(stats.get("shots_on_target", 0))
+    if sot:
+        p = sot * 2
+        points += p
+        bd["rarity_shot_on_target"] = p
+    return round(points, 1), bd
+
+
+def calculate_mid_standard(stats: dict, sub_snapshot: Optional[dict] = None) -> tuple[float, dict]:
+    points = 0.0
+    bd: dict = {}
+
+    g = _i(stats.get("goals", 0))
+    if g:
+        p = g * 6
+        points += p
+        bd["goals"] = p
+
+    a = _i(stats.get("assists", 0))
+    if a:
+        p = a * 5
+        points += p
+        bd["assists"] = p
+
+    kp = _i(stats.get("key_passes", 0))
+    if kp:
+        p = kp * 2.5
+        points += p
+        bd["key_passes"] = p
+
+    cc = _i(stats.get("chances_created", stats.get("chances_created", 0)))
+    if cc:
+        p = cc * 2
+        points += p
+        bd["chances_created"] = p
+
+    xa = _r(stats.get("xa", stats.get("expected_assists", 0)))
+    if xa > 0:
+        p = round((xa / 0.3) * 1.0, 1)
+        points += p
+        bd["xa_per_0_3"] = p
+
+    pp = _i(stats.get("progressive_passes", 0))
+    if pp:
+        p = pp * 0.5
+        points += p
+        bd["progressive_pass"] = p
+
+    dr = _i(stats.get("dribbles_completed", 0))
+    if dr:
+        p = dr * 1.5
+        points += p
+        bd["dribbles_completed"] = p
+
+    rec = _i(stats.get("ball_recoveries", 0))
+    if rec:
+        p = rec * 1
+        points += p
+        bd["recoveries"] = p
+
+    tw = _i(stats.get("tackles_won", 0))
+    if tw:
+        p = tw * 1.5
+        points += p
+        bd["tackles_won"] = p
+
+    inter = _i(stats.get("interceptions", 0))
+    if inter:
+        p = inter * 1.5
+        points += p
+        bd["interceptions"] = p
+
+    tat = _i(stats.get("tackles_attacking_third", 0))
+    if tat:
+        p = tat * 1
+        points += p
+        bd["tackle_attacking_third"] = p
+
+    pl = _i(stats.get("possession_lost", 0))
+    if pl >= 5:
+        p = -(pl // 5)
+        points += p
+        bd["possession_lost"] = p
+
+    return round(points, 1), bd
+
+
+def calculate_mid_rarity(stats: dict, sub_snapshot: Optional[dict] = None) -> tuple[float, dict]:
+    points = 0.0
+    bd: dict = {}
+    obg = _i(stats.get("outside_box_goals", 0))
+    if obg:
+        p = obg * 4
+        points += p
+        bd["rarity_goal_outside_box"] = p
+    oba = _i(stats.get("own_box_aerial_duels_won", 0))
+    if oba:
+        p = oba * 2
+        points += p
+        bd["rarity_aerial_own_box"] = p
+    minutes = _i(stats.get("minutes", 0))
+    gc = _goals_conceded_at_time(stats, sub_snapshot)
+    if gc == 0 and minutes >= 60:
+        points += 2
+        bd["rarity_clean_sheet_mid"] = 2
+    return round(points, 1), bd
+
+
+def calculate_att_standard(stats: dict) -> tuple[float, dict]:
+    points = 0.0
+    bd: dict = {}
+
+    g = _i(stats.get("goals", 0))
+    if g:
+        p = g * 7
+        points += p
+        bd["goals"] = p
+
+    a = _i(stats.get("assists", 0))
+    if a:
+        p = a * 5
+        points += p
+        bd["assists"] = p
+
+    sot = _i(stats.get("shots_on_target", 0))
+    if sot:
+        p = sot * 1.5
+        points += p
+        bd["shots_on_target"] = p
+
+    xg = _r(stats.get("xg", stats.get("expected_goals", 0)))
+    if xg > 0:
+        p = round((xg / 0.3) * 1.0, 1)
+        points += p
+        bd["xg_per_0_3"] = p
+
+    dr = _i(stats.get("dribbles_completed", 0))
+    if dr:
+        p = dr * 2
+        points += p
+        bd["dribbles_completed"] = p
+
+    bcc = _i(stats.get("big_chances_created", stats.get("chances_created", 0)))
+    if bcc:
+        p = bcc * 3
+        points += p
+        bd["big_chance_created"] = p
+
+    tat = _i(stats.get("tackles_attacking_third", 0))
+    if tat:
+        p = tat * 1
+        points += p
+        bd["tackle_attacking_third"] = p
+
+    soff = _i(stats.get("shots_off_target", 0))
+    if soff:
+        p = soff * -0.5
+        points += p
+        bd["shots_off_target"] = p
+
+    bcm = _i(stats.get("big_chance_missed", 0))
+    if bcm:
+        p = bcm * -3
+        points += p
+        bd["big_chance_missed"] = p
+
+    off = _i(stats.get("offsides", 0))
+    if off:
+        p = off * -0.5
+        points += p
+        bd["offsides"] = p
+
+    return round(points, 1), bd
+
+
+def calculate_att_rarity(stats: dict) -> tuple[float, dict]:
+    points = 0.0
+    bd: dict = {}
+    da = _i(stats.get("defensive_aerial_duels_won", 0))
+    if da:
+        p = da * 4
+        points += p
+        bd["rarity_aerial_defensive"] = p
+    oht = _i(stats.get("own_half_tackles_won", 0))
+    if oht:
+        p = oht * 3
+        points += p
+        bd["rarity_tackle_own_half"] = p
+    obc = _i(stats.get("own_box_clearances", 0))
+    if obc:
+        p = obc * 4
+        points += p
+        bd["rarity_clearance_own_box"] = p
+    dti = _i(stats.get("defensive_third_interceptions", 0))
+    if dti:
+        p = dti * 3
+        points += p
+        bd["rarity_interception_def_third"] = p
+    return round(points, 1), bd
+
+
+def calculate_universal_extras(stats: dict) -> tuple[float, dict]:
     """
-    MID scoring — Primary: Control & Transition. Secondary: Everything.
+    General tab — Match Points (all positions): MOTM, hat-trick, brace, G+A,
+    own goal, penalty missed, yellow, red. Cards counted once here.
     """
     points = 0.0
-    breakdown = {}
+    bd: dict = {}
 
-    minutes = stats.get("minutes", 0)
-    if minutes >= 60:
-        points += 2
-        breakdown["minutes_60+"] = 2
-    elif minutes >= 1:
-        points += 1
-        breakdown["minutes_1_59"] = 1
-
-    # Goals
-    goals = stats.get("goals", 0)
-    if goals > 0:
-        pts = goals * 5
-        points += pts
-        breakdown["goals"] = pts
-
-    # Assists
-    assists = stats.get("assists", 0)
-    if assists > 0:
-        pts = assists * 5
-        points += pts
-        breakdown["assists"] = pts
-
-    # Key passes
-    key_passes = stats.get("key_passes", 0)
-    if key_passes > 0:
-        pts = key_passes * 2.5
-        points += pts
-        breakdown["key_passes"] = pts
-
-    # Chances created
-    chances_created = stats.get("chances_created", 0)
-    if chances_created > 0:
-        pts = chances_created * 2.0
-        points += pts
-        breakdown["chances_created"] = pts
-
-    # Progressive passes
-    prog_passes = stats.get("progressive_passes", 0)
-    if prog_passes > 0:
-        pts = prog_passes * 0.5
-        points += pts
-        breakdown["progressive_passes"] = pts
-
-    # Tackles won
-    tackles = stats.get("tackles_won", 0)
-    if tackles > 0:
-        pts = tackles * 1.0
-        points += pts
-        breakdown["tackles_won"] = pts
-
-    # Interceptions
-    interceptions = stats.get("interceptions", 0)
-    if interceptions > 0:
-        pts = interceptions * 1.0
-        points += pts
-        breakdown["interceptions"] = pts
-
-    # Ball recoveries
-    recoveries = stats.get("ball_recoveries", 0)
-    if recoveries > 0:
-        pts = recoveries * 0.5
-        points += pts
-        breakdown["ball_recoveries"] = pts
-
-    # Dribbles completed
-    dribbles = stats.get("dribbles_completed", 0)
-    if dribbles > 0:
-        pts = dribbles * 1.0
-        points += pts
-        breakdown["dribbles_completed"] = pts
-
-    # Clean sheet bonus (small for MID)
-    goals_conceded = _goals_conceded_at_time(stats, sub_snapshot)
-    if goals_conceded == 0 and minutes >= 60:
-        points += 1
-        breakdown["clean_sheet"] = 1
-
-    # Possession lost penalty (every 5)
-    possession_lost = stats.get("possession_lost", 0)
-    if possession_lost >= 5:
-        pts = -(possession_lost // 5)
-        points += pts
-        breakdown["possession_lost"] = pts
-
-    # Cards
-    if stats.get("yellow_card", False):
-        points += -2
-        breakdown["yellow_card"] = -2
-    if stats.get("red_card", False):
-        points += -6
-        breakdown["red_card"] = -6
-
-    # --- Out-of-Position Rarity Bonuses ---
-    # Goal from outside the box
-    outside_box_goals = stats.get("outside_box_goals", 0)
-    if outside_box_goals > 0:
-        pts = outside_box_goals * 4
-        points += pts
-        breakdown["outside_box_goals_rarity"] = pts
-
-    # Aerial duel won in own box
-    own_box_aerials = stats.get("own_box_aerial_duels_won", 0)
-    if own_box_aerials > 0:
-        pts = own_box_aerials * 2
-        points += pts
-        breakdown["own_box_aerials_rarity"] = pts
-
-    return {"total": round(points, 1), "breakdown": breakdown}
-
-
-def calculate_att_points(stats: dict, sub_snapshot: Optional[dict] = None) -> dict:
-    """
-    ATT scoring — Primary: Creating & Converting Chances
-    """
-    points = 0.0
-    breakdown = {}
-
-    minutes = stats.get("minutes", 0)
-    if minutes >= 60:
-        points += 2
-        breakdown["minutes_60+"] = 2
-    elif minutes >= 1:
-        points += 1
-        breakdown["minutes_1_59"] = 1
-
-    # Goals
-    goals = stats.get("goals", 0)
-    if goals > 0:
-        pts = goals * 5
-        points += pts
-        breakdown["goals"] = pts
-
-    # Assists
-    assists = stats.get("assists", 0)
-    if assists > 0:
-        pts = assists * 4
-        points += pts
-        breakdown["assists"] = pts
-
-    # Shots on target
-    shots_on_target = stats.get("shots_on_target", 0)
-    if shots_on_target > 0:
-        pts = shots_on_target * 1.5
-        points += pts
-        breakdown["shots_on_target"] = pts
-
-    # Shots off target penalty
-    shots_off = stats.get("shots_off_target", 0)
-    if shots_off > 0:
-        pts = shots_off * -0.5
-        points += pts
-        breakdown["shots_off_target"] = pts
-
-    # Big chance missed
-    big_chance_missed = stats.get("big_chance_missed", 0)
-    if big_chance_missed > 0:
-        pts = big_chance_missed * -3
-        points += pts
-        breakdown["big_chance_missed"] = pts
-
-    # Dribbles completed
-    dribbles = stats.get("dribbles_completed", 0)
-    if dribbles > 0:
-        pts = dribbles * 2.0
-        points += pts
-        breakdown["dribbles_completed"] = pts
-
-    # Chances created
-    chances_created = stats.get("chances_created", 0)
-    if chances_created > 0:
-        pts = chances_created * 2.0
-        points += pts
-        breakdown["chances_created"] = pts
-
-    # Offsides penalty
-    offsides = stats.get("offsides", 0)
-    if offsides > 0:
-        pts = offsides * -0.5
-        points += pts
-        breakdown["offsides"] = pts
-
-    # Cards
-    if stats.get("yellow_card", False):
-        points += -2
-        breakdown["yellow_card"] = -2
-    if stats.get("red_card", False):
-        points += -6
-        breakdown["red_card"] = -6
-
-    # --- Out-of-Position Rarity Bonuses ---
-    # Aerial duel won in own half (ATT tracking back)
-    defensive_aerials = stats.get("defensive_aerial_duels_won", 0)
-    if defensive_aerials > 0:
-        pts = defensive_aerials * 4
-        points += pts
-        breakdown["defensive_aerials_rarity"] = pts
-
-    # Tackle won in own half
-    own_half_tackles = stats.get("own_half_tackles_won", 0)
-    if own_half_tackles > 0:
-        pts = own_half_tackles * 3
-        points += pts
-        breakdown["own_half_tackles_rarity"] = pts
-
-    # Clearance in own box
-    own_box_clearances = stats.get("own_box_clearances", 0)
-    if own_box_clearances > 0:
-        pts = own_box_clearances * 4
-        points += pts
-        breakdown["own_box_clearances_rarity"] = pts
-
-    # Interception in defensive third
-    defensive_interceptions = stats.get("defensive_third_interceptions", 0)
-    if defensive_interceptions > 0:
-        pts = defensive_interceptions * 3
-        points += pts
-        breakdown["defensive_interceptions_rarity"] = pts
-
-    return {"total": round(points, 1), "breakdown": breakdown}
-
-
-def calculate_universal_bonuses(stats: dict, base_points: float) -> dict:
-    """
-    Universal bonuses applied on top of position-specific points.
-    """
-    bonus = 0.0
-    breakdown = {}
-
-    # Man of the Match
     if stats.get("motm", False):
-        bonus += 6
-        breakdown["motm"] = 6
+        points += 6
+        bd["motm"] = 6
 
-    goals = stats.get("goals", 0)
+    goals = _i(stats.get("goals", 0))
+    assists = _i(stats.get("assists", 0))
 
-    # Hat trick
     if goals >= 3:
-        bonus += 10
-        breakdown["hat_trick"] = 10
-    # Brace
+        points += 10
+        bd["hat_trick_bonus"] = 10
     elif goals == 2:
-        bonus += 3
-        breakdown["brace"] = 3
+        points += 4
+        bd["brace_bonus"] = 4
 
-    # Goal + Assist same game
-    if goals >= 1 and stats.get("assists", 0) >= 1:
-        bonus += 3
-        breakdown["goal_and_assist"] = 3
+    if goals >= 1 and assists >= 1:
+        points += 4
+        bd["goal_and_assist_bonus"] = 4
 
-    # Own goal
-    own_goals = stats.get("own_goals", 0)
-    if own_goals > 0:
-        pts = own_goals * -4
-        bonus += pts
-        breakdown["own_goals"] = pts
+    og = _i(stats.get("own_goals", 0))
+    if og:
+        p = og * -4
+        points += p
+        bd["own_goals"] = p
 
-    # Penalty missed
-    penalties_missed = stats.get("penalties_missed", 0)
-    if penalties_missed > 0:
-        pts = penalties_missed * -3
-        bonus += pts
-        breakdown["penalties_missed"] = pts
+    pm = _i(stats.get("penalties_missed", 0))
+    if pm:
+        p = pm * -3
+        points += p
+        bd["penalties_missed"] = p
 
-    return {"bonus": round(bonus, 1), "breakdown": breakdown}
+    if stats.get("yellow_card", False):
+        points += -2
+        bd["yellow_card"] = -2
+    if stats.get("red_card", False):
+        points += -6
+        bd["red_card"] = -6
 
-
-def apply_captain_multiplier(points: float, is_captain: bool, is_vice_captain: bool) -> float:
-    """
-    Captain = 2x, Vice Captain = 1.5x
-    """
-    if is_captain:
-        return round(points * 2, 1)
-    elif is_vice_captain:
-        return round(points * 1.5, 1)
-    return points
-
-
-def apply_win_bonus(points: float, team_won: bool) -> float:
-    """
-    +1 if player's real CL team won the match.
-    """
-    if team_won:
-        return round(points + 1, 1)
-    return points
+    return round(points, 1), bd
 
 
 def calculate_player_points(
     position: str,
     stats: dict,
     sub_snapshot: Optional[dict] = None,
-    is_captain: bool = False,
-    is_vice_captain: bool = False,
     team_won: bool = False,
+    match_draw: bool = False,
 ) -> dict:
     """
-    Main entry point. Calculates full fantasy points for a player.
-
-    Args:
-        position: GK / DEF / MID / ATT
-        stats: dict of match stats from API-Football
-        sub_snapshot: {minute, home_score, away_score} at substitution
-        is_captain: whether this player is the team's captain
-        is_vice_captain: whether this player is the team's vice captain
-        team_won: whether the player's real club won the match
-
-    Returns:
-        {
-            base_points: float,
-            bonus_points: float,
-            total_points: float,
-            breakdown: dict
-        }
+    Full fantasy points before lineup multipliers: minutes + position (standard + rarity for that
+    role) + universal extras + match win (+1) / draw (+0.5). Captain / vice are applied in the router
+    when summing the starting XI.
     """
-    # Calculate position-specific points
+    min_pts, min_bd = score_minutes_universal(stats)
+
+    pos_pts = 0.0
+    pos_bd: dict = {}
     if position == "GK":
-        pos_result = calculate_gk_points(stats, sub_snapshot)
+        s, b = calculate_gk_standard(stats, sub_snapshot)
+        r, br = calculate_gk_rarity(stats)
+        pos_pts = s + r
+        pos_bd = {**b, **br}
     elif position == "DEF":
-        pos_result = calculate_def_points(stats, sub_snapshot)
+        s, b = calculate_def_standard(stats, sub_snapshot)
+        r, br = calculate_def_rarity(stats)
+        pos_pts = s + r
+        pos_bd = {**b, **br}
     elif position == "MID":
-        pos_result = calculate_mid_points(stats, sub_snapshot)
+        s, b = calculate_mid_standard(stats, sub_snapshot)
+        r, br = calculate_mid_rarity(stats, sub_snapshot)
+        pos_pts = s + r
+        pos_bd = {**b, **br}
     elif position == "ATT":
-        pos_result = calculate_att_points(stats, sub_snapshot)
-    else:
-        pos_result = {"total": 0.0, "breakdown": {}}
+        s, b = calculate_att_standard(stats)
+        r, br = calculate_att_rarity(stats)
+        pos_pts = s + r
+        pos_bd = {**b, **br}
 
-    base_points = pos_result["total"]
-    base_breakdown = pos_result["breakdown"]
+    uni_pts, uni_bd = calculate_universal_extras(stats)
 
-    # Calculate universal bonuses
-    bonus_result = calculate_universal_bonuses(stats, base_points)
-    bonus_points = bonus_result["bonus"]
-    bonus_breakdown = bonus_result["breakdown"]
-
-    # Combine
-    total = base_points + bonus_points
-
-    # Apply win bonus
-    total = apply_win_bonus(total, team_won)
+    match_pts = 0.0
+    match_bd: dict = {}
     if team_won:
-        bonus_breakdown["win_bonus"] = 1
+        match_pts += 1.0
+        match_bd["match_winning_team"] = 1.0
+    if match_draw:
+        match_pts += 0.5
+        match_bd["draw"] = 0.5
 
-    # Apply captain/VC multiplier
-    total = apply_captain_multiplier(total, is_captain, is_vice_captain)
+    # Captain / vice multipliers are applied when aggregating the starting XI (see scoring router).
+    pre_captain = round(min_pts + pos_pts + uni_pts + match_pts, 1)
+
+    base_points = round(min_pts + pos_pts, 1)
+    bonus_points = round(uni_pts + match_pts, 1)
+
+    all_bd = {
+        **min_bd,
+        **pos_bd,
+        **uni_bd,
+        **match_bd,
+        "subtotal_before_lineup_multipliers": pre_captain,
+    }
 
     return {
         "base_points": base_points,
         "bonus_points": bonus_points,
-        "total_points": total,
-        "breakdown": {**base_breakdown, **bonus_breakdown},
+        "total_points": pre_captain,
+        "breakdown": all_bd,
     }
-
-
-def _goals_conceded_at_time(stats: dict, sub_snapshot: Optional[dict]) -> int:
-    """
-    Option B: If player was subbed off, use goals conceded at that minute.
-    Otherwise use final goals conceded.
-    """
-    if sub_snapshot and sub_snapshot.get("minute"):
-        # Use the score at the time of substitution
-        return sub_snapshot.get("goals_conceded_at_sub", 0)
-    return stats.get("goals_conceded", 0)
