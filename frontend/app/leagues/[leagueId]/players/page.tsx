@@ -407,6 +407,11 @@ export default function PlayerPoolPage() {
         owningTeamName={
           modalId ? rows.find((x) => x.id === modalId)?.owner_team_name ?? null : null
         }
+        ownerTeamId={
+          modalId ? rows.find((x) => x.id === modalId)?.owner_team_id ?? null : null
+        }
+        myTeamId={myTeamId ?? null}
+        currentWeek={selectedWeek}
         onClose={() => setModalId(null)}
       />
     </div>

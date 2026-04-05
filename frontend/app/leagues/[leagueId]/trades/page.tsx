@@ -1,7 +1,7 @@
 "use client";
 
-import { useParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useParams, useSearchParams } from "next/navigation";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useUser } from "@clerk/nextjs";
 import { apiUrl } from "@/lib/api";
 
@@ -33,8 +33,13 @@ const BAR = ["bg-emerald-500", "bg-violet-500", "bg-amber-500", "bg-sky-500"];
 
 export default function TradesPage() {
   const params = useParams();
+  const searchParams = useSearchParams();
   const leagueId = params.leagueId as string;
   const { user } = useUser();
+
+  const prefillPlayer = searchParams.get("player");
+  const prefillTeam = searchParams.get("team");
+  const prefilled = useRef(false);
 
   const [tab, setTab] = useState<"new" | "inbox" | "history">("new");
   const [inboxSub, setInboxSub] = useState<"received" | "sent">("received");
@@ -92,6 +97,17 @@ export default function TradesPage() {
       c = true;
     };
   }, [leagueId, user?.id]);
+
+  useEffect(() => {
+    if (prefilled.current || !prefillPlayer || !prefillTeam) return;
+    if (allTeams.length === 0 || Object.keys(otherSquads).length === 0) return;
+    const targetTeam = allTeams.find((t) => t.id === prefillTeam);
+    if (!targetTeam) return;
+    prefilled.current = true;
+    setTab("new");
+    setOpp(targetTeam);
+    setTheirs(new Set([prefillPlayer]));
+  }, [allTeams, otherSquads, prefillPlayer, prefillTeam]);
 
   const toggle = (set: React.Dispatch<React.SetStateAction<Set<string>>>, id: string) => {
     set((prev) => {

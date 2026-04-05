@@ -477,6 +477,9 @@ export default function TeamPage() {
         leagueId={leagueId}
         playerId={modalId}
         owningTeamName={teamName}
+        ownerTeamId={myTeamId}
+        myTeamId={myTeamId}
+        currentWeek={week}
         onClose={() => setModalId(null)}
       />
     </div>
