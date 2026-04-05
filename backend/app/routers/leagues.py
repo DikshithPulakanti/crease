@@ -2,7 +2,7 @@ import random
 import string
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -431,7 +431,16 @@ async def list_league_teams(league_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{league_id}/standings")
-async def get_standings(league_id: str, db: AsyncSession = Depends(get_db)):
+async def get_standings(
+    league_id: str,
+    gameweek: Optional[int] = Query(
+        None,
+        ge=1,
+        description="If set, cumulative stats through this gameweek (inclusive).",
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.models.gameweek import Gameweek
     from app.models.matchup import Matchup
 
     teams_result = await db.execute(
@@ -443,11 +452,24 @@ async def get_standings(league_id: str, db: AsyncSession = Depends(get_db)):
 
     wins: dict[str, int] = defaultdict(int)
     losses: dict[str, int] = defaultdict(int)
+    draws: dict[str, int] = defaultdict(int)
     fantasy_points: dict[str, float] = defaultdict(float)
 
-    mu_result = await db.execute(
-        select(Matchup).where(Matchup.league_id == league_id)
-    )
+    if gameweek is not None:
+        mu_result = await db.execute(
+            select(Matchup)
+            .join(Gameweek, Matchup.gameweek_id == Gameweek.id)
+            .where(
+                Matchup.league_id == league_id,
+                Gameweek.league_id == league_id,
+                Gameweek.number <= gameweek,
+            )
+        )
+    else:
+        mu_result = await db.execute(
+            select(Matchup).where(Matchup.league_id == league_id)
+        )
+
     for m in mu_result.scalars().all():
         hid, aid = str(m.home_team_id), str(m.away_team_id)
         fantasy_points[hid] += float(m.home_score or 0)
@@ -460,6 +482,9 @@ async def get_standings(league_id: str, db: AsyncSession = Depends(get_db)):
         elif m.result == "away":
             wins[aid] += 1
             losses[hid] += 1
+        elif m.result == "draw":
+            draws[hid] += 1
+            draws[aid] += 1
 
     user_ids = list({t.user_id for t in teams.values()})
     username_by_id: dict[str, str] = {}
@@ -471,21 +496,21 @@ async def get_standings(league_id: str, db: AsyncSession = Depends(get_db)):
     rows = []
     for tid, team in teams.items():
         owner_username = username_by_id.get(team.user_id) or team.user_id
+        tp = round(fantasy_points.get(tid, 0.0), 1)
         rows.append(
             {
                 "team_id": tid,
-                "name": team.name,
-                "user_id": team.user_id,
+                "team_name": team.name,
                 "owner_username": owner_username,
                 "wins": wins.get(tid, 0),
                 "losses": losses.get(tid, 0),
-                "fantasy_points_season": round(fantasy_points.get(tid, 0.0), 1),
-                "standings_points": float(team.standings_points or 0),
+                "draws": draws.get(tid, 0),
+                "total_points": tp,
             }
         )
 
     rows.sort(
-        key=lambda r: (-r["wins"], -r["fantasy_points_season"], r["name"])
+        key=lambda r: (-r["wins"], -r["total_points"], r["team_name"])
     )
     for i, row in enumerate(rows, start=1):
         row["rank"] = i

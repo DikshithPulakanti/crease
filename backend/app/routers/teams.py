@@ -1,9 +1,10 @@
+import uuid
 from datetime import datetime, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from pydantic import BaseModel
 from app.database import get_db
 from app.models.squad import SquadPlayer
@@ -153,7 +154,8 @@ async def get_squad(team_id: str, db: AsyncSession = Depends(get_db)):
 
 
 class SelectionRequest(BaseModel):
-    starting_11: List[str]
+    gameweek: int
+    player_ids: List[str]
     captain_id: str
     vice_captain_id: str
 
@@ -162,45 +164,93 @@ class SelectionRequest(BaseModel):
 async def save_selection(
     team_id: str,
     body: SelectionRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
-    if len(body.starting_11) != 11:
+    tid = uuid.UUID(team_id)
+
+    team_result = await db.execute(select(Team).where(Team.id == tid))
+    team = team_result.scalar_one_or_none()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    league_id = str(team.league_id)
+
+    gw_result = await db.execute(
+        select(Gameweek).where(
+            Gameweek.league_id == league_id,
+            Gameweek.number == body.gameweek,
+        )
+    )
+    gw = gw_result.scalar_one_or_none()
+    if not gw:
+        raise HTTPException(status_code=404, detail="Gameweek not found")
+
+    if gw.locks_at and gw.locks_at <= datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Gameweek is locked")
+
+    if len(body.player_ids) != 11:
         raise HTTPException(status_code=400, detail="Must select exactly 11 players")
 
-    if body.captain_id not in body.starting_11:
-        raise HTTPException(status_code=400, detail="Captain must be in starting 11")
+    if body.captain_id not in body.player_ids:
+        raise HTTPException(status_code=400, detail="Captain must be in starting lineup")
 
-    if body.vice_captain_id not in body.starting_11:
-        raise HTTPException(status_code=400, detail="Vice captain must be in starting 11")
+    if body.vice_captain_id not in body.player_ids:
+        raise HTTPException(status_code=400, detail="Vice captain must be in starting lineup")
 
     if body.captain_id == body.vice_captain_id:
         raise HTTPException(status_code=400, detail="Captain and vice captain must be different")
 
-    # Validate positions in starting 11
+    squad_result = await db.execute(
+        select(SquadPlayer.player_id).where(SquadPlayer.team_id == tid)
+    )
+    squad_ids = {str(r[0]) for r in squad_result.fetchall()}
+    for pid in body.player_ids:
+        if pid not in squad_ids:
+            raise HTTPException(status_code=400, detail="All starters must be on your squad")
+
     players_result = await db.execute(
-        select(Player).where(Player.id.in_(body.starting_11))
+        select(Player).where(Player.id.in_(body.player_ids))
     )
     starting_players = players_result.scalars().all()
+    if len(starting_players) != 11:
+        raise HTTPException(status_code=400, detail="Invalid player ids")
 
     position_counts = {"GK": 0, "DEF": 0, "MID": 0, "ATT": 0}
     for p in starting_players:
         position_counts[p.position] = position_counts.get(p.position, 0) + 1
 
-    # Must have exactly 1 GK
     if position_counts.get("GK", 0) != 1:
         raise HTTPException(status_code=400, detail="Starting 11 must have exactly 1 goalkeeper")
 
-    # Must have at least 3 DEF
     if position_counts.get("DEF", 0) < 3:
         raise HTTPException(status_code=400, detail="Starting 11 must have at least 3 defenders")
 
-    # Must have at least 2 MID
     if position_counts.get("MID", 0) < 2:
         raise HTTPException(status_code=400, detail="Starting 11 must have at least 2 midfielders")
 
-    # Must have at least 1 ATT
     if position_counts.get("ATT", 0) < 1:
         raise HTTPException(status_code=400, detail="Starting 11 must have at least 1 attacker")
+
+    await db.execute(
+        delete(GameweekSelection).where(
+            GameweekSelection.team_id == tid,
+            GameweekSelection.gameweek_id == gw.id,
+        )
+    )
+
+    for pid in body.player_ids:
+        uid = uuid.UUID(pid)
+        db.add(
+            GameweekSelection(
+                team_id=tid,
+                gameweek_id=gw.id,
+                player_id=uid,
+                is_captain=(pid == body.captain_id),
+                is_vice_captain=(pid == body.vice_captain_id),
+            )
+        )
+
+    await db.commit()
 
     return {"message": "Selection saved successfully", "position_counts": position_counts}
 

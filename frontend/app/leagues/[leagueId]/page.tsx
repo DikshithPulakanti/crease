@@ -26,12 +26,12 @@ type Gameweek = {
 type StandRow = {
   rank: number;
   team_id: string;
-  name: string;
-  user_id: string;
+  team_name: string;
   owner_username?: string;
   wins: number;
   losses: number;
-  fantasy_points_season: number;
+  draws: number;
+  total_points: number;
 };
 
 const ACCENT_BAR = [
@@ -57,11 +57,12 @@ export default function LeagueHubPage() {
   const [teams, setTeams] = useState<HubTeam[]>([]);
   const [status, setStatus] = useState<string>("");
   const [gameweeks, setGameweeks] = useState<Gameweek[]>([]);
-  const [gwNum, setGwNum] = useState(1);
+  const [selectedWeek, setSelectedWeek] = useState(1);
   const [matchups, setMatchups] = useState<
     { id: string; home_team_id: string; away_team_id: string; home_score: number; away_score: number }[]
   >([]);
   const [standings, setStandings] = useState<StandRow[]>([]);
+  const [standingsRefreshing, setStandingsRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
@@ -74,16 +75,14 @@ export default function LeagueHubPage() {
     let cancelled = false;
     (async () => {
       try {
-        const [hubRes, gwRes, stRes, actRes] = await Promise.all([
+        const [hubRes, gwRes, actRes] = await Promise.all([
           fetch(apiUrl(`/leagues/${leagueId}/hub`)),
           fetch(apiUrl(`/leagues/${leagueId}/gameweeks`)),
-          fetch(apiUrl(`/leagues/${leagueId}/standings`)),
           fetch(apiUrl(`/leagues/${leagueId}/activity`)),
         ]);
         if (!hubRes.ok) throw new Error("League not found");
         const hub = await hubRes.json();
         const gws = gwRes.ok ? await gwRes.json() : [];
-        const st = stRes.ok ? await stRes.json() : [];
         let actLen = 0;
         if (actRes.ok) {
           const act = await actRes.json();
@@ -94,9 +93,8 @@ export default function LeagueHubPage() {
         setTeams(hub.teams ?? []);
         setStatus(hub.status ?? "");
         setGameweeks(gws);
-        setStandings(st);
         setActivityCount(actLen);
-        if (gws?.length) setGwNum(gws[0].number);
+        if (gws?.length) setSelectedWeek(gws[0].number);
       } catch (e) {
         if (!cancelled) setErr(e instanceof Error ? e.message : "Error");
       } finally {
@@ -111,20 +109,33 @@ export default function LeagueHubPage() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const res = await fetch(apiUrl(`/leagues/${leagueId}/matchups?gameweek=${gwNum}`));
-      if (!res.ok || cancelled) return;
-      const data = await res.json();
-      if (cancelled) return;
-      setMatchups(data.matchups ?? []);
+      setStandingsRefreshing(true);
+      try {
+        const [muRes, stRes] = await Promise.all([
+          fetch(apiUrl(`/leagues/${leagueId}/matchups?gameweek=${selectedWeek}`)),
+          fetch(apiUrl(`/leagues/${leagueId}/standings?gameweek=${selectedWeek}`)),
+        ]);
+        if (cancelled) return;
+        if (muRes.ok) {
+          const data = await muRes.json();
+          setMatchups(data.matchups ?? []);
+        }
+        if (stRes.ok) {
+          const st = await stRes.json();
+          setStandings(Array.isArray(st) ? st : []);
+        }
+      } finally {
+        if (!cancelled) setStandingsRefreshing(false);
+      }
     })();
     return () => {
       cancelled = true;
     };
-  }, [leagueId, gwNum]);
+  }, [leagueId, selectedWeek]);
 
   const weekLabel = useMemo(() => {
-    const g = gameweeks.find((x) => x.number === gwNum);
-    if (!g) return `Week ${gwNum}`;
+    const g = gameweeks.find((x) => x.number === selectedWeek);
+    if (!g) return `Week ${selectedWeek}`;
     const start = g.starts_at
       ? new Date(g.starts_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })
       : "";
@@ -132,8 +143,8 @@ export default function LeagueHubPage() {
       ? new Date(g.ends_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })
       : "";
     const range = start && end ? `${start} – ${end}` : "";
-    return `Week ${gwNum} of ${gameweeks.length || 5}${range ? ` · ${range}` : ""}`;
-  }, [gameweeks, gwNum]);
+    return `Week ${selectedWeek} of ${gameweeks.length || 5}${range ? ` · ${range}` : ""}`;
+  }, [gameweeks, selectedWeek]);
 
   const weekOptions = useMemo(() => {
     if (gameweeks.length > 0) {
@@ -244,8 +255,8 @@ export default function LeagueHubPage() {
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-lg font-bold tracking-tight text-white">Matchups</h2>
             <select
-              value={gwNum}
-              onChange={(e) => setGwNum(Number(e.target.value))}
+              value={selectedWeek}
+              onChange={(e) => setSelectedWeek(Number(e.target.value))}
               className="rounded-xl border border-white/8 bg-black/40 px-3 py-2 text-sm font-semibold text-white"
             >
               {weekOptions.map((o) => (
@@ -285,10 +296,15 @@ export default function LeagueHubPage() {
           )}
         </section>
 
-        <section className="overflow-hidden rounded-2xl border border-white/8 bg-white/[0.03]">
+        <section className="relative overflow-hidden rounded-2xl border border-white/8 bg-white/[0.03]">
           <div className="border-b border-white/8 px-5 py-4">
             <h2 className="text-lg font-bold tracking-tight text-white">Standings</h2>
-            <p className="text-xs text-zinc-500">Sorted by wins, then season fantasy points.</p>
+            <p className="mt-0.5 text-xs font-medium text-emerald-400/90">
+              Through Week {selectedWeek}
+            </p>
+            <p className="mt-1 text-xs text-zinc-500">
+              Cumulative through the selected week: wins, losses, draws, then fantasy points as tiebreaker.
+            </p>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
@@ -300,39 +316,58 @@ export default function LeagueHubPage() {
                 </tr>
               </thead>
               <tbody>
-                {standings.map((row) => {
-                  const handle = row.owner_username ?? row.user_id;
-                  return (
-                    <tr key={row.team_id} className="border-b border-white/5 hover:bg-white/[0.02]">
-                      <td className="px-5 py-4 font-bold tabular-nums text-white">{row.rank}</td>
-                      <td className="px-5 py-4">
-                        <div className="flex items-center gap-3">
-                          <span
-                            className={`h-10 w-1 rounded-full ${ACCENT_BAR[row.rank % ACCENT_BAR.length]}`}
-                          />
-                          <div>
-                            <p className="font-semibold text-white">{row.name}</p>
-                            <p className="text-xs text-zinc-500">
-                              @{handle} ·{" "}
-                              <span className="text-emerald-400">
-                                {row.wins}-{row.losses}
-                              </span>
-                            </p>
+                {standingsRefreshing
+                  ? Array.from({ length: Math.max(standings.length || 5, 5) }).map((_, i) => (
+                      <tr key={`sk-${i}`} className="border-b border-white/5">
+                        <td className="px-5 py-4">
+                          <div className="h-5 w-8 animate-pulse rounded bg-white/[0.06]" />
+                        </td>
+                        <td className="px-5 py-4">
+                          <div className="flex items-center gap-3">
+                            <div className="h-10 w-1 animate-pulse rounded-full bg-white/[0.06]" />
+                            <div className="min-w-0 flex-1 space-y-2">
+                              <div className="h-4 w-40 max-w-full animate-pulse rounded bg-white/[0.06]" />
+                              <div className="h-3 w-28 animate-pulse rounded bg-white/[0.04]" />
+                            </div>
                           </div>
-                        </div>
-                      </td>
-                      <td className="px-5 py-4 text-right text-lg font-bold tabular-nums text-emerald-400">
-                        {row.fantasy_points_season.toLocaleString(undefined, {
-                          minimumFractionDigits: 1,
-                          maximumFractionDigits: 1,
-                        })}
-                      </td>
-                    </tr>
-                  );
-                })}
+                        </td>
+                        <td className="px-5 py-4 text-right">
+                          <div className="ml-auto h-7 w-16 animate-pulse rounded bg-white/[0.06]" />
+                        </td>
+                      </tr>
+                    ))
+                  : standings.map((row) => {
+                      const handle = row.owner_username ?? "—";
+                      const rec = `${row.wins}-${row.losses}-${row.draws}`;
+                      return (
+                        <tr key={row.team_id} className="border-b border-white/5 hover:bg-white/[0.02]">
+                          <td className="px-5 py-4 font-bold tabular-nums text-white">{row.rank}</td>
+                          <td className="px-5 py-4">
+                            <div className="flex items-center gap-3">
+                              <span
+                                className={`h-10 w-1 rounded-full ${ACCENT_BAR[row.rank % ACCENT_BAR.length]}`}
+                              />
+                              <div>
+                                <p className="font-semibold text-white">{row.team_name}</p>
+                                <p className="text-xs text-zinc-500">
+                                  @{handle} ·{" "}
+                                  <span className="text-emerald-400">{rec}</span>
+                                </p>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-5 py-4 text-right text-lg font-bold tabular-nums text-emerald-400">
+                            {row.total_points.toLocaleString(undefined, {
+                              minimumFractionDigits: 1,
+                              maximumFractionDigits: 1,
+                            })}
+                          </td>
+                        </tr>
+                      );
+                    })}
               </tbody>
             </table>
-            {standings.length === 0 && (
+            {!standingsRefreshing && standings.length === 0 && (
               <p className="p-8 text-center text-sm text-zinc-500">
                 Standings populate after matchups are scored.
               </p>
