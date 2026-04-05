@@ -1,7 +1,7 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useUser } from "@clerk/nextjs";
 import { apiUrl } from "@/lib/api";
 import { PlayerProfileModal } from "@/app/components/PlayerProfileModal";
@@ -24,6 +24,12 @@ type PoolPlayer = {
     yellows: number;
     reds: number;
   };
+};
+
+type GameweekOption = {
+  id: string;
+  number: number;
+  label: string;
 };
 
 const BAR = [
@@ -52,6 +58,8 @@ export default function PlayerPoolPage() {
   const [mateFilter, setMateFilter] = useState<Record<string, boolean>>({});
   const [clubFilter, setClubFilter] = useState<Record<string, boolean>>({});
   const [modalId, setModalId] = useState<string | null>(null);
+  const [gameweeks, setGameweeks] = useState<GameweekOption[]>([]);
+  const [selectedWeek, setSelectedWeek] = useState<number>(1);
 
   const myTeamId = useMemo(
     () => teams.find((t) => t.user_id === user?.id)?.id,
@@ -62,8 +70,24 @@ export default function PlayerPoolPage() {
     let c = false;
     (async () => {
       try {
+        const gwRes = await fetch(apiUrl(`/leagues/${leagueId}/gameweeks`));
+        const gwData: GameweekOption[] = gwRes.ok ? await gwRes.json() : [];
+        if (!c) {
+          if (gwData.length > 0) {
+            setGameweeks(gwData);
+          } else {
+            setGameweeks(
+              Array.from({ length: 5 }, (_, i) => ({
+                id: `fallback-${i + 1}`,
+                number: i + 1,
+                label: `Week ${i + 1}`,
+              }))
+            );
+          }
+        }
+
         const [pr, hub] = await Promise.all([
-          fetch(apiUrl(`/leagues/${leagueId}/players`)),
+          fetch(apiUrl(`/leagues/${leagueId}/players?gameweek=${selectedWeek}`)),
           fetch(apiUrl(`/leagues/${leagueId}/hub`)),
         ]);
         if (!pr.ok) throw new Error("Failed to load players");
@@ -83,6 +107,28 @@ export default function PlayerPoolPage() {
       c = true;
     };
   }, [leagueId]);
+
+  const fetchPlayers = useCallback(async (week: number, free: boolean) => {
+    try {
+      const params = new URLSearchParams({ gameweek: String(week) });
+      if (free) params.set("free_agents_only", "true");
+      const res = await fetch(apiUrl(`/leagues/${leagueId}/players?${params}`));
+      if (!res.ok) throw new Error("Failed to load players");
+      setRows(await res.json());
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Error");
+    }
+  }, [leagueId]);
+
+  const handleWeekChange = (week: number) => {
+    setSelectedWeek(week);
+    fetchPlayers(week, freeOnly);
+  };
+
+  const handleFreeOnlyChange = (checked: boolean) => {
+    setFreeOnly(checked);
+    fetchPlayers(selectedWeek, checked);
+  };
 
   const clubs = useMemo(() => {
     const s = new Set<string>();
@@ -175,14 +221,22 @@ export default function PlayerPoolPage() {
           <select className="rounded-xl border border-white/8 bg-black/40 px-3 py-2 font-semibold text-white">
             <option>Champions League 2025/26</option>
           </select>
-          <select className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 font-semibold text-emerald-300">
-            <option>Week 1</option>
+          <select
+            value={selectedWeek}
+            onChange={(e) => handleWeekChange(Number(e.target.value))}
+            className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 font-semibold text-emerald-300"
+          >
+            {gameweeks.map((gw) => (
+              <option key={gw.id} value={gw.number}>
+                {gw.label}
+              </option>
+            ))}
           </select>
           <label className="flex cursor-pointer items-center gap-2 text-zinc-400">
             <input
               type="checkbox"
               checked={freeOnly}
-              onChange={(e) => setFreeOnly(e.target.checked)}
+              onChange={(e) => handleFreeOnlyChange(e.target.checked)}
               className="rounded border-white/20 bg-black/40"
             />
             Free agents only

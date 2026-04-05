@@ -565,7 +565,11 @@ async def get_matchups_by_number(
 
 
 @router.get("/{league_id}/players")
-async def get_league_players_pool(league_id: str, db: AsyncSession = Depends(get_db)):
+async def get_league_players_pool(
+    league_id: str,
+    db: AsyncSession = Depends(get_db),
+    free_agents_only: bool = False,
+):
     from app.models.player import Player
     from app.models.squad import SquadPlayer
 
@@ -576,6 +580,7 @@ async def get_league_players_pool(league_id: str, db: AsyncSession = Depends(get
     team_ids = [t.id for t in teams]
     team_by_id = {str(t.id): t for t in teams}
 
+    owned_player_ids: set[str] = set()
     owner: dict[str, str] = {}
     if team_ids:
         sq_result = await db.execute(
@@ -583,6 +588,7 @@ async def get_league_players_pool(league_id: str, db: AsyncSession = Depends(get
         )
         for sp in sq_result.scalars().all():
             owner[str(sp.player_id)] = str(sp.team_id)
+            owned_player_ids.add(str(sp.player_id))
 
     players_result = await db.execute(select(Player))
     players = players_result.scalars().all()
@@ -591,11 +597,14 @@ async def get_league_players_pool(league_id: str, db: AsyncSession = Depends(get
     for rank, p in enumerate(
         sorted(players, key=lambda x: x.name), start=1
     ):
-        tid = owner.get(str(p.id))
+        pid = str(p.id)
+        if free_agents_only and pid in owned_player_ids:
+            continue
+        tid = owner.get(pid)
         out.append(
             {
                 "rank": rank,
-                "id": str(p.id),
+                "id": pid,
                 "name": p.name,
                 "position": p.position,
                 "club": p.club,
