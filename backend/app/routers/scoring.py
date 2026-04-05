@@ -87,6 +87,12 @@ def map_api_stats(api_stats: dict, position: str) -> dict:
         "possession_lost": dribbles.get("past", 0) or 0,
         "dribbled_past": dribbles.get("past", 0) or 0,
         "errors_leading_to_goal": fouls.get("committed", 0) or 0,
+        # Optional — wire when available from provider / enrichment
+        "saves_inside_box": 0,
+        "xg_faced": 0,
+        "ground_duels_won": 0,
+        "xa": 0,
+        "xg": 0,
     }
 
 
