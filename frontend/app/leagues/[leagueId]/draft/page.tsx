@@ -3,6 +3,7 @@
 import { useParams } from "next/navigation";
 import { useState, useEffect, useRef } from "react";
 import { useUser } from "@clerk/nextjs";
+import { apiUrl } from "@/lib/api";
 
 interface Player {
   id: string;
@@ -90,6 +91,17 @@ export default function DraftRoomPage() {
   const [loading, setLoading] = useState(true);
   const [secondsLeft, setSecondsLeft] = useState(90);
   const [showPlayerPool, setShowPlayerPool] = useState(false);
+  const [boardFromApi, setBoardFromApi] = useState<{
+    teams: { id: string; name: string; draft_position: number | null; accent_index: number }[];
+    picks: {
+      round: number;
+      pick_number: number;
+      team_id: string;
+      player_id: string;
+      player: Player | null;
+    }[];
+    total_picks: number;
+  } | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -117,9 +129,7 @@ export default function DraftRoomPage() {
 
   async function fetchDraftState() {
     try {
-      const res = await fetch(
-        "http://localhost:8000/leagues/" + leagueId + "/draft-state"
-      );
+      const res = await fetch(apiUrl(`/leagues/${leagueId}/draft-state`));
       const data = await res.json();
       setDraftState(data);
     } catch (err) {
@@ -129,14 +139,17 @@ export default function DraftRoomPage() {
 
   async function fetchInitialData() {
     try {
-      const [playersRes, hubRes] = await Promise.all([
-        fetch("http://localhost:8000/players"),
-        fetch("http://localhost:8000/leagues/" + leagueId + "/hub"),
+      const [playersRes, hubRes, boardRes] = await Promise.all([
+        fetch(apiUrl("/players")),
+        fetch(apiUrl(`/leagues/${leagueId}/hub`)),
+        fetch(apiUrl(`/leagues/${leagueId}/draft`)),
       ]);
       const playersData = await playersRes.json();
       const hubData = await hubRes.json();
+      const boardData = boardRes.ok ? await boardRes.json() : null;
       setPlayers(playersData);
       setTeams(hubData.teams ?? []);
+      setBoardFromApi(boardData);
       const myTeam = hubData.teams?.find((t: Team) => t.user_id === user?.id);
       if (myTeam) setMyTeamId(myTeam.id);
     } catch (err) {
@@ -147,9 +160,11 @@ export default function DraftRoomPage() {
   }
 
   function connectWebSocket() {
-    const ws = new WebSocket(
-      "ws://localhost:8000/ws/draft/" + leagueId + "/" + myTeamId
+    const base = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(
+      /^http/,
+      "ws"
     );
+    const ws = new WebSocket(`${base}/ws/draft/${leagueId}/${myTeamId}`);
     ws.onmessage = (event) => {
       const msg = JSON.parse(event.data);
       if (msg.event === "draft_state") {
@@ -216,21 +231,35 @@ export default function DraftRoomPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-950 text-white flex items-center justify-center">
-        <p className="text-gray-400">Loading draft room...</p>
+      <div className="flex min-h-screen items-center justify-center bg-[#0a0a0f] text-white">
+        <p className="text-sm text-zinc-500">Loading draft room…</p>
       </div>
     );
   }
 
-  if (draftState?.is_complete) {
+  const live =
+    draftState &&
+    !draftState.is_complete &&
+    draftState.status !== "not_started" &&
+    Array.isArray(draftState.order) &&
+    draftState.order.length > 0;
+
+  const showPostBoard =
+    boardFromApi && boardFromApi.total_picks > 0 && !live;
+
+  if (showPostBoard && boardFromApi) {
+    return <PostDraftBoard leagueId={leagueId} data={boardFromApi} />;
+  }
+
+  if (draftState?.is_complete && (!boardFromApi || boardFromApi.total_picks === 0)) {
     return (
-      <div className="min-h-screen bg-gray-950 text-white flex items-center justify-center">
+      <div className="flex min-h-screen items-center justify-center bg-[#0a0a0f] text-white">
         <div className="text-center">
-          <h2 className="text-3xl font-bold mb-4">Draft Complete!</h2>
-          <p className="text-gray-400 mb-8">All squads have been drafted.</p>
+          <h2 className="mb-4 text-3xl font-bold">Draft Complete!</h2>
+          <p className="mb-8 text-zinc-400">All squads have been drafted.</p>
           <a
             href={"/leagues/" + leagueId}
-            className="bg-white text-gray-950 font-semibold px-6 py-3 rounded-xl hover:bg-gray-200 transition"
+            className="rounded-xl bg-white px-6 py-3 font-semibold text-gray-950 transition hover:bg-zinc-200"
           >
             Go to League Hub
           </a>
@@ -441,6 +470,123 @@ export default function DraftRoomPage() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function PostDraftBoard({
+  leagueId,
+  data,
+}: {
+  leagueId: string;
+  data: {
+    teams: { id: string; name: string; draft_position: number | null; accent_index: number }[];
+    picks: {
+      round: number;
+      pick_number: number;
+      team_id: string;
+      player_id: string;
+      player: Player | null;
+    }[];
+    total_picks: number;
+  };
+}) {
+  const order = [...data.teams].sort(
+    (a, b) => (a.draft_position ?? 999) - (b.draft_position ?? 999)
+  );
+  const n = order.length || 1;
+  const maxR = Math.max(1, ...data.picks.map((p) => p.round));
+
+  const grid: ({
+    pick_number: number;
+    round: number;
+    player: Player | null;
+  } | null)[][] = Array.from({ length: maxR }, () => Array(n).fill(null));
+
+  for (const pick of data.picks) {
+    const r = pick.round - 1;
+    if (r < 0 || r >= maxR) continue;
+    const col = order.findIndex((t) => t.id === pick.team_id);
+    if (col < 0) continue;
+    grid[r][col] = {
+      pick_number: pick.pick_number,
+      round: pick.round,
+      player: pick.player,
+    };
+  }
+
+  return (
+    <div className="min-h-screen bg-[#0a0a0f] pb-24 text-white">
+      <header className="border-b border-white/8 px-4 py-6 md:px-8">
+        <h1 className="text-2xl font-bold tracking-tight">Draft Board</h1>
+        <p className="text-sm text-zinc-500">
+          {n} teams × {maxR} rounds snake draft · {data.total_picks} picks
+        </p>
+      </header>
+      <div className="overflow-x-auto p-4">
+        <table className="w-full min-w-[800px] border-collapse">
+          <thead>
+            <tr>
+              <th className="w-8 pb-3 text-left text-xs font-normal text-zinc-600" />
+              {order.map((t, i) => (
+                <th key={t.id} className="px-1 pb-3">
+                  <div
+                    className={`rounded-xl border-t-2 py-2 text-center ${TEAM_COLORS[i % TEAM_COLORS.length]} border border-white/8 bg-white/[0.03]`}
+                  >
+                    <p className="text-xs text-zinc-500">#{i + 1}</p>
+                    <p className="truncate text-sm font-semibold">{t.name}</p>
+                  </div>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {grid.map((row, ri) => (
+              <tr key={ri}>
+                <td className="align-top pt-2 text-center text-xs text-zinc-600">{ri + 1}</td>
+                {row.map((cell, ci) => (
+                  <td key={ci} className="p-1 align-top">
+                    {cell?.player ? (
+                      <div
+                        className={`rounded-2xl border p-2 ${getClubColor(cell.player.club).border} ${getClubColor(cell.player.club).bg}`}
+                      >
+                        <p className="mb-1 text-right text-[10px] text-zinc-500">
+                          {cell.round}.
+                          {(cell.round - 1) % 2 === 0 ? ci + 1 : n - ci}
+                        </p>
+                        {cell.player.photo_url && (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={cell.player.photo_url}
+                            alt=""
+                            className="mx-auto mb-1 h-10 w-10 rounded-full object-cover"
+                          />
+                        )}
+                        <p className="text-center text-xs font-bold leading-tight">
+                          {cell.player.name}
+                        </p>
+                        <span
+                          className={`mt-1 flex justify-center text-[10px] font-bold ${POSITION_COLORS[cell.player.position] ?? "bg-zinc-700 text-white"} rounded px-1.5 py-0.5`}
+                        >
+                          {cell.player.position}
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="h-24 rounded-2xl border border-dashed border-white/10 bg-zinc-900/50" />
+                    )}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <a
+        href={`/leagues/${leagueId}`}
+        className="mx-4 mt-4 inline-block rounded-2xl border border-white/8 px-6 py-3 text-sm font-bold text-zinc-300 hover:bg-white/5 md:mx-8"
+      >
+        ← League hub
+      </a>
     </div>
   );
 }

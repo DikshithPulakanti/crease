@@ -1,17 +1,127 @@
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, HTTPException
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
-from typing import List
 from app.database import get_db
 from app.models.squad import SquadPlayer
 from app.models.player import Player
 from app.models.trade import Trade
 from app.models.team import Team
 from app.models.activity import ActivityFeed
+from app.models.gameweek import Gameweek, GameweekSelection
+from app.models.matchup import PlayerMatchScore
 
 router = APIRouter(prefix="/teams", tags=["teams"])
+
+
+@router.get("/{team_id}/roster")
+async def get_roster(
+    team_id: str,
+    gameweek: Optional[int] = Query(
+        None, description="Gameweek number within the team's league"
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Squad with optional per-gameweek selection flags and fantasy points.
+    """
+    team_result = await db.execute(select(Team).where(Team.id == team_id))
+    team = team_result.scalar_one_or_none()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    league_id = str(team.league_id)
+
+    gw_id: Optional[str] = None
+    if gameweek is not None:
+        gw_result = await db.execute(
+            select(Gameweek).where(
+                Gameweek.league_id == league_id,
+                Gameweek.number == gameweek,
+            )
+        )
+        gw = gw_result.scalar_one_or_none()
+        if gw:
+            gw_id = str(gw.id)
+
+    result = await db.execute(
+        select(SquadPlayer).where(SquadPlayer.team_id == team_id)
+    )
+    squad_players = result.scalars().all()
+
+    selections: dict[str, GameweekSelection] = {}
+    if gw_id:
+        sel_result = await db.execute(
+            select(GameweekSelection).where(
+                GameweekSelection.team_id == team_id,
+                GameweekSelection.gameweek_id == gw_id,
+            )
+        )
+        for s in sel_result.scalars().all():
+            selections[str(s.player_id)] = s
+
+    out = []
+    for sp in squad_players:
+        player_result = await db.execute(
+            select(Player).where(Player.id == sp.player_id)
+        )
+        player = player_result.scalar_one_or_none()
+        if not player:
+            continue
+
+        sel = selections.get(str(sp.player_id))
+        pts = 0.0
+        breakdown: dict | None = None
+        if gw_id:
+            score_result = await db.execute(
+                select(PlayerMatchScore).where(
+                    PlayerMatchScore.player_id == sp.player_id,
+                    PlayerMatchScore.gameweek_id == gw_id,
+                )
+            )
+            score = score_result.scalar_one_or_none()
+            if score:
+                pts = float(score.total_points)
+                breakdown = score.stats
+
+        base_pts = pts
+        mult = 1.0
+        if sel:
+            if sel.is_captain:
+                mult = 2.0
+            elif sel.is_vice_captain:
+                mult = 1.5
+        final_pts = round(base_pts * mult, 1)
+
+        out.append(
+            {
+                "player_id": str(sp.player_id),
+                "player": {
+                    "id": str(player.id),
+                    "name": player.name,
+                    "position": player.position,
+                    "club": player.club,
+                    "photo_url": player.photo_url,
+                },
+                "is_starting": bool(sel),
+                "is_captain": bool(sel and sel.is_captain),
+                "is_vice_captain": bool(sel and sel.is_vice_captain),
+                "base_points": base_pts,
+                "multiplier": mult,
+                "fantasy_points": final_pts,
+                "stats_breakdown": breakdown,
+            }
+        )
+
+    return {
+        "team_id": team_id,
+        "league_id": league_id,
+        "gameweek": gameweek,
+        "players": out,
+    }
 
 
 @router.get("/{team_id}/squad")

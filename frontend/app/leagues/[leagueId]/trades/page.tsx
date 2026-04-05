@@ -1,371 +1,456 @@
 "use client";
 
 import { useParams } from "next/navigation";
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useUser } from "@clerk/nextjs";
+import { apiUrl } from "@/lib/api";
 
-interface Player {
+type Player = {
   id: string;
   name: string;
   position: string;
   club: string;
   photo_url: string | null;
-}
+};
 
-interface Team {
-  id: string;
-  name: string;
-  user_id: string;
-}
+type Team = { id: string; name: string; user_id: string };
 
-interface SquadPlayer {
-  player_id: string;
-  player: Player;
-}
+type SquadPlayer = { player_id: string; player: Player };
 
-interface Trade {
+type TradeRow = {
   id: string;
   proposer_team_id: string;
   receiver_team_id: string;
   proposer_player_id: string;
   receiver_player_id: string;
+  proposer_player_name: string;
+  receiver_player_name: string;
   status: string;
-  expires_at: string;
-}
-
-const POSITION_COLORS: Record<string, string> = {
-  GK: "bg-yellow-500 text-yellow-950",
-  DEF: "bg-blue-500 text-blue-950",
-  MID: "bg-green-500 text-green-950",
-  ATT: "bg-red-500 text-red-950",
+  created_at: string;
 };
 
-const STATUS_COLORS: Record<string, string> = {
-  pending: "bg-yellow-900 text-yellow-300",
-  accepted: "bg-green-900 text-green-300",
-  rejected: "bg-red-900 text-red-300",
-  countered: "bg-blue-900 text-blue-300",
-  expired: "bg-gray-800 text-gray-400",
-};
+const BAR = ["bg-emerald-500", "bg-violet-500", "bg-amber-500", "bg-sky-500"];
 
 export default function TradesPage() {
   const params = useParams();
   const leagueId = params.leagueId as string;
   const { user } = useUser();
 
+  const [tab, setTab] = useState<"new" | "inbox" | "history">("new");
+  const [inboxSub, setInboxSub] = useState<"received" | "sent">("received");
+
   const [myTeam, setMyTeam] = useState<Team | null>(null);
   const [allTeams, setAllTeams] = useState<Team[]>([]);
   const [mySquad, setMySquad] = useState<SquadPlayer[]>([]);
-  const [trades, setTrades] = useState<Trade[]>([]);
-  const [allPlayers, setAllPlayers] = useState<Record<string, Player>>({});
-  const [allSquads, setAllSquads] = useState<Record<string, SquadPlayer[]>>({});
+  const [otherSquads, setOtherSquads] = useState<Record<string, SquadPlayer[]>>({});
+  const [leagueTrades, setLeagueTrades] = useState<TradeRow[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Propose trade state
-  const [selectedTeam, setSelectedTeam] = useState<Team | null>(null);
-  const [myPlayerOffer, setMyPlayerOffer] = useState<string>("");
-  const [theirPlayerRequest, setTheirPlayerRequest] = useState<string>("");
-  const [proposing, setProposing] = useState(false);
-  const [proposed, setProposed] = useState(false);
+  const [opp, setOpp] = useState<Team | null>(null);
+  const [mine, setMine] = useState<Set<string>>(new Set());
+  const [theirs, setTheirs] = useState<Set<string>>(new Set());
+  const [sending, setSending] = useState(false);
 
-  useEffect(() => {
-    if (user?.id) fetchData();
-  }, [leagueId, user?.id]);
-
-  async function fetchData() {
-    try {
-      const hubRes = await fetch("http://localhost:8000/leagues/" + leagueId + "/hub");
-      const hubData = await hubRes.json();
-
-      const me = hubData.teams?.find((t: Team) => t.user_id === user?.id);
-      setMyTeam(me ?? null);
-      setAllTeams(hubData.teams ?? []);
-
-      if (me) {
-        const [squadRes, tradesRes] = await Promise.all([
-          fetch("http://localhost:8000/teams/" + me.id + "/squad"),
-          fetch("http://localhost:8000/teams/" + me.id + "/trades"),
-        ]);
-        const squadData = await squadRes.json();
-        const tradesData = await tradesRes.json();
-        setMySquad(squadData);
-        setTrades(tradesData);
-
-        const playerMap: Record<string, Player> = {};
-        squadData.forEach((s: SquadPlayer) => {
-          playerMap[s.player_id] = s.player;
-        });
-
-        // Fetch other teams squads for player lookup
-        const otherTeams = hubData.teams?.filter((t: Team) => t.id !== me.id) ?? [];
-        const squadPromises = otherTeams.map((t: Team) =>
-          fetch("http://localhost:8000/teams/" + t.id + "/squad")
-            .then((r) => r.json())
-            .then((data) => ({ teamId: t.id, squad: data }))
-        );
-        const otherSquads = await Promise.all(squadPromises);
-        const squadsMap: Record<string, SquadPlayer[]> = {};
-        otherSquads.forEach(({ teamId, squad }) => {
-          squadsMap[teamId] = squad;
-          squad.forEach((s: SquadPlayer) => {
-            playerMap[s.player_id] = s.player;
-          });
-        });
-        setAllSquads(squadsMap);
-        setAllPlayers(playerMap);
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
+  async function refresh() {
+    const hubRes = await fetch(apiUrl(`/leagues/${leagueId}/hub`));
+    const hubData = await hubRes.json();
+    const me = hubData.teams?.find((t: Team) => t.user_id === user?.id) ?? null;
+    setMyTeam(me);
+    setAllTeams(hubData.teams ?? []);
+    if (me) {
+      const [squadRes, trRes] = await Promise.all([
+        fetch(apiUrl(`/teams/${me.id}/squad`)),
+        fetch(apiUrl(`/leagues/${leagueId}/trades`)),
+      ]);
+      const squadData = await squadRes.json();
+      const tr = await trRes.json();
+      setMySquad(squadData);
+      setLeagueTrades(tr);
+      const others = hubData.teams?.filter((t: Team) => t.id !== me.id) ?? [];
+      const squads: Record<string, SquadPlayer[]> = {};
+      await Promise.all(
+        others.map(async (t: Team) => {
+          const r = await fetch(apiUrl(`/teams/${t.id}/squad`));
+          squads[t.id] = await r.json();
+        })
+      );
+      setOtherSquads(squads);
     }
   }
 
-  async function proposeTrade() {
-    if (!myTeam || !selectedTeam || !myPlayerOffer || !theirPlayerRequest) return;
-    setProposing(true);
+  useEffect(() => {
+    if (!user?.id) return;
+    let c = false;
+    (async () => {
+      try {
+        await refresh();
+      } finally {
+        if (!c) setLoading(false);
+      }
+    })();
+    return () => {
+      c = true;
+    };
+  }, [leagueId, user?.id]);
+
+  const toggle = (set: React.Dispatch<React.SetStateAction<Set<string>>>, id: string) => {
+    set((prev) => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  };
+
+  async function sendProposal() {
+    if (!myTeam || !opp || mine.size === 0 || theirs.size === 0 || mine.size !== theirs.size) return;
+    setSending(true);
     try {
-      const res = await fetch("http://localhost:8000/teams/" + myTeam.id + "/trades", {
+      const proposer_player_ids = Array.from(mine);
+      const receiver_player_ids = Array.from(theirs);
+      const res = await fetch(apiUrl(`/leagues/${leagueId}/trades`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          league_id: leagueId,
-          receiver_team_id: selectedTeam.id,
-          proposer_player_id: myPlayerOffer,
-          receiver_player_id: theirPlayerRequest,
+          proposer_team_id: myTeam.id,
+          receiver_team_id: opp.id,
+          proposer_player_ids,
+          receiver_player_ids,
         }),
       });
       if (res.ok) {
-        setProposed(true);
-        setMyPlayerOffer("");
-        setTheirPlayerRequest("");
-        setSelectedTeam(null);
-        setTimeout(() => setProposed(false), 3000);
-        fetchData();
+        setMine(new Set());
+        setTheirs(new Set());
+        await refresh();
       }
-    } catch (err) {
-      console.error(err);
     } finally {
-      setProposing(false);
+      setSending(false);
     }
   }
 
-  async function handleTradeAction(tradeId: string, action: string) {
+  async function tradeAction(tradeId: string, action: string) {
     if (!myTeam) return;
-    try {
-      await fetch("http://localhost:8000/teams/" + myTeam.id + "/trades/" + tradeId + "/action", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
-      });
-      fetchData();
-    } catch (err) {
-      console.error(err);
-    }
+    await fetch(apiUrl(`/teams/${myTeam.id}/trades/${tradeId}/action`), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    await refresh();
   }
 
-  const incomingTrades = trades.filter(
-    (t) => t.receiver_team_id === myTeam?.id && t.status === "pending"
+  const incoming = useMemo(
+    () =>
+      leagueTrades.filter(
+        (t) => t.receiver_team_id === myTeam?.id && t.status === "pending"
+      ),
+    [leagueTrades, myTeam?.id]
   );
-  const outgoingTrades = trades.filter((t) => t.proposer_team_id === myTeam?.id);
 
-  const teamName = (id: string) =>
-    allTeams.find((t) => t.id === id)?.name ?? "Unknown";
+  const outgoing = useMemo(
+    () =>
+      leagueTrades.filter(
+        (t) => t.proposer_team_id === myTeam?.id && t.status === "pending"
+      ),
+    [leagueTrades, myTeam?.id]
+  );
 
-  const playerName = (id: string) =>
-    allPlayers[id]?.name ?? "Unknown Player";
+  const history = useMemo(
+    () => leagueTrades.filter((t) => t.status !== "pending"),
+    [leagueTrades]
+  );
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-950 text-white flex items-center justify-center">
-        <p className="text-gray-400">Loading trades...</p>
+      <div className="flex min-h-[40vh] items-center justify-center">
+        <p className="text-sm text-zinc-500">Loading…</p>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-950 text-white">
-      <header className="border-b border-gray-800 px-6 py-4 flex items-center gap-4">
-        <a href={"/leagues/" + leagueId} className="text-gray-400 hover:text-white transition">
-          ← League Hub
-        </a>
-        <h1 className="text-xl font-bold">⚽ Trades</h1>
+    <div className="min-h-screen pb-28 md:pb-8">
+      <header className="border-b border-white/8 px-4 py-6 md:px-8">
+        <h1 className="text-2xl font-bold tracking-tight text-white">Trades</h1>
       </header>
 
-      <main className="max-w-3xl mx-auto px-6 py-8 space-y-8">
+      <div className="px-4 py-4 md:px-8">
+        <div className="flex flex-wrap justify-center gap-2 rounded-2xl border border-white/8 bg-white/[0.03] p-1">
+          {(
+            [
+              ["new", "+ New"],
+              ["inbox", "Inbox"],
+              ["history", "History"],
+            ] as const
+          ).map(([k, label]) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setTab(k)}
+              className={`rounded-xl px-6 py-2 text-sm font-bold ${
+                tab === k ? "bg-white/10 text-white ring-1 ring-white/25" : "text-zinc-500"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
 
-        {/* Propose Trade */}
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-          <h2 className="text-lg font-bold mb-4">Propose a Trade</h2>
-
-          {/* Select team */}
-          <div className="mb-4">
-            <label className="text-sm text-gray-400 mb-2 block">Select opponent team</label>
-            <div className="flex gap-2 flex-wrap">
-              {allTeams
-                .filter((t) => t.id !== myTeam?.id)
-                .map((team) => (
+      {tab === "new" && myTeam && (
+        <div className="grid gap-4 px-4 pb-32 md:grid-cols-2 md:px-8">
+          <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+            <div className="mb-4">
+              <h2 className="text-sm font-bold uppercase tracking-wide text-emerald-400">You Send</h2>
+              <p className="text-xs text-zinc-500">{mine.size} selected</p>
+            </div>
+            <ul className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
+              {mySquad.map((s, i) => (
+                <li key={s.player_id}>
                   <button
-                    key={team.id}
-                    onClick={() => {
-                      setSelectedTeam(team);
-                      setTheirPlayerRequest("");
-                    }}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
-                      selectedTeam?.id === team.id
-                        ? "bg-white text-gray-950"
-                        : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+                    type="button"
+                    onClick={() => toggle(setMine, s.player_id)}
+                    className={`flex w-full items-center gap-3 rounded-2xl border px-3 py-2 text-left transition ${
+                      mine.has(s.player_id)
+                        ? "border-emerald-500/60 bg-emerald-500/10"
+                        : "border-white/8 bg-black/20 hover:border-white/15"
                     }`}
                   >
-                    {team.name}
+                    <span className={`w-1 self-stretch rounded-full ${BAR[i % BAR.length]}`} />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-semibold text-white">{s.player.name}</p>
+                      <p className="text-xs text-zinc-500">
+                        <span className="rounded bg-white/10 px-1.5 py-0.5">{s.player.club}</span>{" "}
+                        <span className="rounded bg-white/5 px-1.5 py-0.5">{s.player.position}</span>
+                      </p>
+                    </div>
+                    <span
+                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 ${
+                        mine.has(s.player_id)
+                          ? "border-emerald-400 bg-emerald-500/30"
+                          : "border-zinc-600"
+                      }`}
+                    >
+                      {mine.has(s.player_id) ? "✓" : ""}
+                    </span>
                   </button>
-                ))}
-            </div>
+                </li>
+              ))}
+            </ul>
           </div>
 
-          {selectedTeam && (
-            <div className="grid grid-cols-2 gap-4 mb-4">
-              {/* My player to offer */}
-              <div>
-                <label className="text-sm text-gray-400 mb-2 block">
-                  Your player to offer
-                </label>
-                <select
-                  value={myPlayerOffer}
-                  onChange={(e) => setMyPlayerOffer(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none"
-                >
-                  <option value="">Select player...</option>
-                  {mySquad.map((s) => (
-                    <option key={s.player_id} value={s.player_id}>
-                      {s.player.name} ({s.player.position})
+          <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+            <div className="mb-4">
+              <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-violet-300">
+                Select team
+              </label>
+              <select
+                value={opp?.id ?? ""}
+                onChange={(e) => {
+                  const t = allTeams.find((x) => x.id === e.target.value);
+                  setOpp(t ?? null);
+                  setTheirs(new Set());
+                }}
+                className="w-full rounded-2xl border border-violet-500/40 bg-black/40 px-4 py-3 text-sm font-semibold text-white"
+              >
+                <option value="">Select team</option>
+                {allTeams
+                  .filter((t) => t.id !== myTeam.id)
+                  .map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
                     </option>
                   ))}
-                </select>
-              </div>
+              </select>
+            </div>
+            {opp && (
+              <>
+                <p className="mb-2 text-xs text-zinc-500">{theirs.size} selected</p>
+                <ul className="max-h-[380px] space-y-2 overflow-y-auto pr-1">
+                  {(otherSquads[opp.id] ?? []).map((s, i) => (
+                    <li key={s.player_id}>
+                      <button
+                        type="button"
+                        onClick={() => toggle(setTheirs, s.player_id)}
+                        className={`flex w-full items-center gap-3 rounded-2xl border px-3 py-2 text-left transition ${
+                          theirs.has(s.player_id)
+                            ? "border-violet-500/60 bg-violet-500/10"
+                            : "border-white/8 bg-black/20 hover:border-white/15"
+                        }`}
+                      >
+                        <span className={`w-1 self-stretch rounded-full ${BAR[i % BAR.length]}`} />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate font-semibold text-white">{s.player.name}</p>
+                          <p className="text-xs text-zinc-500">
+                            <span className="rounded bg-white/10 px-1.5 py-0.5">{s.player.club}</span>{" "}
+                            <span className="rounded bg-white/5 px-1.5 py-0.5">{s.player.position}</span>
+                          </p>
+                        </div>
+                        <span
+                          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2 ${
+                            theirs.has(s.player_id)
+                              ? "border-violet-400 bg-violet-500/30"
+                              : "border-zinc-600"
+                          }`}
+                        >
+                          {theirs.has(s.player_id) ? "✓" : ""}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
-              {/* Their player to request */}
-              <div>
-                <label className="text-sm text-gray-400 mb-2 block">
-                  Their player you want
-                </label>
-                <select
-                  value={theirPlayerRequest}
-                  onChange={(e) => setTheirPlayerRequest(e.target.value)}
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none"
-                >
-                  <option value="">Select player...</option>
-                  {(allSquads[selectedTeam.id] ?? []).map((s) => (
-                    <option key={s.player_id} value={s.player_id}>
-                      {s.player.name} ({s.player.position})
-                    </option>
-                  ))}
-                </select>
-              </div>
+      {tab === "inbox" && (
+        <div className="px-4 md:px-8">
+          <div className="mb-4 flex gap-2">
+            <button
+              type="button"
+              onClick={() => setInboxSub("received")}
+              className={`rounded-xl px-4 py-2 text-sm font-bold ${
+                inboxSub === "received" ? "bg-white/10 text-white" : "text-zinc-500"
+              }`}
+            >
+              Received
+            </button>
+            <button
+              type="button"
+              onClick={() => setInboxSub("sent")}
+              className={`rounded-xl px-4 py-2 text-sm font-bold ${
+                inboxSub === "sent" ? "bg-white/10 text-white" : "text-zinc-500"
+              }`}
+            >
+              Sent
+            </button>
+          </div>
+          {inboxSub === "received" && incoming.length === 0 && (
+            <div className="rounded-2xl border border-dashed border-white/10 py-16 text-center">
+              <p className="text-sm text-zinc-500">No incoming trade requests.</p>
             </div>
           )}
-
-          <button
-            onClick={proposeTrade}
-            disabled={!selectedTeam || !myPlayerOffer || !theirPlayerRequest || proposing}
-            className="w-full bg-white text-gray-950 font-semibold rounded-lg px-4 py-3 hover:bg-gray-200 transition disabled:opacity-40"
-          >
-            {proposed ? "Trade Proposed!" : proposing ? "Sending..." : "Send Trade Proposal"}
-          </button>
+          {inboxSub === "received" &&
+            incoming.map((t) => (
+              <div
+                key={t.id}
+                className="mb-4 rounded-2xl border border-white/8 bg-white/[0.03] p-5"
+              >
+                <p className="mb-2 text-sm text-zinc-400">
+                  From <span className="font-semibold text-white">{teamName(allTeams, t.proposer_team_id)}</span>
+                </p>
+                <div className="mb-4 grid grid-cols-2 gap-3 text-center text-sm">
+                  <div className="rounded-xl bg-black/30 p-3">
+                    <p className="text-xs text-zinc-500">Sends</p>
+                    <p className="font-semibold text-white">{t.proposer_player_name}</p>
+                  </div>
+                  <div className="rounded-xl bg-black/30 p-3">
+                    <p className="text-xs text-zinc-500">For</p>
+                    <p className="font-semibold text-white">{t.receiver_player_name}</p>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => tradeAction(t.id, "accept")}
+                    className="flex-1 rounded-xl bg-emerald-600 py-2 text-sm font-bold text-white hover:bg-emerald-500"
+                  >
+                    Accept
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => tradeAction(t.id, "reject")}
+                    className="flex-1 rounded-xl border border-red-500/40 py-2 text-sm font-bold text-red-300 hover:bg-red-500/10"
+                  >
+                    Reject
+                  </button>
+                </div>
+              </div>
+            ))}
+          {inboxSub === "sent" && outgoing.length === 0 && (
+            <p className="text-center text-sm text-zinc-500">No outgoing pending trades.</p>
+          )}
+          {inboxSub === "sent" &&
+            outgoing.map((t) => (
+              <div key={t.id} className="mb-4 rounded-2xl border border-white/8 bg-white/[0.03] p-4 text-sm">
+                <p className="text-zinc-400">
+                  To {teamName(allTeams, t.receiver_team_id)} — pending
+                </p>
+                <p className="mt-2 text-white">
+                  {t.proposer_player_name} ⇄ {t.receiver_player_name}
+                </p>
+              </div>
+            ))}
         </div>
+      )}
 
-        {/* Incoming Trades */}
-        {incomingTrades.length > 0 && (
-          <div>
-            <h2 className="text-lg font-bold mb-3">
-              Incoming Trades ({incomingTrades.length})
-            </h2>
-            <div className="space-y-3">
-              {incomingTrades.map((trade) => (
-                <div
-                  key={trade.id}
-                  className="bg-gray-900 border border-yellow-700 rounded-xl p-5"
+      {tab === "history" && (
+        <div className="space-y-4 px-4 md:px-8">
+          {history.length === 0 && (
+            <p className="text-center text-sm text-zinc-500">No completed trades yet.</p>
+          )}
+          {history.map((t) => (
+            <div key={t.id} className="rounded-2xl border border-white/8 bg-white/[0.03] p-5">
+              <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
+                <p className="font-bold text-white">
+                  {teamName(allTeams, t.proposer_team_id)} ⇄ {teamName(allTeams, t.receiver_team_id)}
+                </p>
+                <span
+                  className={`rounded-full px-2 py-0.5 text-xs font-bold ${
+                    t.status === "accepted"
+                      ? "bg-emerald-500/20 text-emerald-300"
+                      : "bg-red-500/20 text-red-300"
+                  }`}
                 >
-                  <div className="flex items-center justify-between mb-4">
-                    <p className="text-sm text-gray-400">
-                      From <span className="text-white font-semibold">{teamName(trade.proposer_team_id)}</span>
-                    </p>
-                    <span className="text-xs text-yellow-400 bg-yellow-900 px-2 py-1 rounded">
-                      Pending
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4 mb-4 text-center">
-                    <div className="bg-gray-800 rounded-lg p-3">
-                      <p className="text-xs text-gray-400 mb-1">They offer</p>
-                      <p className="text-sm font-semibold">{playerName(trade.proposer_player_id)}</p>
-                      <p className="text-xs text-gray-500">{allPlayers[trade.proposer_player_id]?.club}</p>
-                    </div>
-                    <div className="bg-gray-800 rounded-lg p-3">
-                      <p className="text-xs text-gray-400 mb-1">They want</p>
-                      <p className="text-sm font-semibold">{playerName(trade.receiver_player_id)}</p>
-                      <p className="text-xs text-gray-500">{allPlayers[trade.receiver_player_id]?.club}</p>
-                    </div>
-                  </div>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => handleTradeAction(trade.id, "accept")}
-                      className="flex-1 bg-green-700 hover:bg-green-600 text-white text-sm font-semibold py-2 rounded-lg transition"
-                    >
-                      Accept
-                    </button>
-                    <button
-                      onClick={() => handleTradeAction(trade.id, "reject")}
-                      className="flex-1 bg-red-900 hover:bg-red-800 text-red-300 text-sm font-semibold py-2 rounded-lg transition"
-                    >
-                      Reject
-                    </button>
-                  </div>
+                  {t.status}
+                </span>
+              </div>
+              <p className="mb-4 text-xs text-zinc-500">
+                {new Date(t.created_at).toLocaleString()}
+              </p>
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <p className="text-xs uppercase text-zinc-500">Sends</p>
+                  <p className="font-semibold text-white">{t.proposer_player_name}</p>
                 </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Outgoing Trades */}
-        {outgoingTrades.length > 0 && (
-          <div>
-            <h2 className="text-lg font-bold mb-3">My Trade History</h2>
-            <div className="space-y-3">
-              {outgoingTrades.map((trade) => (
-                <div
-                  key={trade.id}
-                  className="bg-gray-900 border border-gray-700 rounded-xl p-5"
-                >
-                  <div className="flex items-center justify-between mb-3">
-                    <p className="text-sm text-gray-400">
-                      To <span className="text-white font-semibold">{teamName(trade.receiver_team_id)}</span>
-                    </p>
-                    <span className={`text-xs px-2 py-1 rounded ${STATUS_COLORS[trade.status]}`}>
-                      {trade.status}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4 text-center">
-                    <div className="bg-gray-800 rounded-lg p-3">
-                      <p className="text-xs text-gray-400 mb-1">You offered</p>
-                      <p className="text-sm font-semibold">{playerName(trade.proposer_player_id)}</p>
-                    </div>
-                    <div className="bg-gray-800 rounded-lg p-3">
-                      <p className="text-xs text-gray-400 mb-1">You wanted</p>
-                      <p className="text-sm font-semibold">{playerName(trade.receiver_player_id)}</p>
-                    </div>
-                  </div>
+                <div>
+                  <p className="text-xs uppercase text-zinc-500">Sends</p>
+                  <p className="font-semibold text-white">{t.receiver_player_name}</p>
                 </div>
-              ))}
+              </div>
             </div>
-          </div>
-        )}
+          ))}
+        </div>
+      )}
 
-        {trades.length === 0 && incomingTrades.length === 0 && (
-          <p className="text-gray-500 text-sm text-center py-8">
-            No trades yet. Propose one above!
-          </p>
-        )}
-      </main>
+      {tab === "new" && myTeam && (
+        <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-white/8 bg-[#0a0a0f]/95 px-4 py-4 backdrop-blur md:bottom-0 md:left-[72px] lg:left-56">
+          <div className="mx-auto flex max-w-4xl items-center gap-4">
+            <span className="text-sm font-bold text-emerald-400">{mine.size} out</span>
+            <span className="text-zinc-600">⇄</span>
+            <span className="text-sm font-bold text-violet-400">{theirs.size} in</span>
+            <button
+              type="button"
+              disabled={
+                sending ||
+                !opp ||
+                mine.size === 0 ||
+                theirs.size === 0 ||
+                mine.size !== theirs.size
+              }
+              onClick={sendProposal}
+              className="ml-auto flex flex-1 items-center justify-center gap-2 rounded-2xl bg-violet-600 py-3 text-sm font-bold text-white shadow-lg shadow-violet-900/30 disabled:cursor-not-allowed disabled:opacity-40 md:max-w-md"
+            >
+              Send Trade Proposal <span aria-hidden>✈</span>
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+function teamName(teams: Team[], id: string) {
+  return teams.find((t) => t.id === id)?.name ?? "Team";
 }
